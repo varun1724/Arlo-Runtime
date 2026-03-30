@@ -1,0 +1,32 @@
+FROM python:3.12-slim
+
+# Install Node.js 20 (required for Claude Code CLI) + gosu for user switching
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates git gosu && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code CLI globally
+RUN npm install -g @anthropic-ai/claude-code
+
+WORKDIR /opt/arlo
+
+# Install Python dependencies first (layer caching)
+COPY pyproject.toml .
+RUN pip install --no-cache-dir .
+
+# Copy application code
+COPY app/ app/
+COPY alembic/ alembic/
+COPY alembic.ini .
+
+# Create non-root user for worker (required for --dangerously-skip-permissions)
+RUN useradd -m -s /bin/bash arlo && \
+    mkdir -p /workspaces && chown -R arlo:arlo /workspaces
+
+# Entrypoint fixes volume permissions then drops to arlo user
+COPY docker/worker-entrypoint.sh /usr/local/bin/worker-entrypoint.sh
+RUN chmod +x /usr/local/bin/worker-entrypoint.sh
+
+ENTRYPOINT ["worker-entrypoint.sh"]

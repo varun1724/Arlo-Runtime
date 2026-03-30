@@ -1,0 +1,379 @@
+from __future__ import annotations
+
+import json
+import logging
+import uuid
+from collections import defaultdict
+from datetime import datetime, timezone
+
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import JobRow, WorkflowRow
+from app.models.job import CreateJobRequest, JobStatus, JobType
+from app.models.workflow import (
+    CreateWorkflowRequest,
+    StepCondition,
+    StepDefinition,
+    WorkflowStatus,
+)
+from app.services.job_service import create_job
+
+logger = logging.getLogger("arlo.workflow")
+
+
+async def create_workflow(
+    session: AsyncSession, request: CreateWorkflowRequest
+) -> WorkflowRow:
+    """Create a workflow and kick off its first step."""
+    step_defs_json = json.dumps([s.model_dump() for s in request.steps])
+    context_json = json.dumps(request.initial_context)
+
+    row = WorkflowRow(
+        name=request.name,
+        template_id=request.template_id,
+        status=WorkflowStatus.RUNNING.value,
+        context=context_json,
+        step_definitions=step_defs_json,
+        current_step_index=0,
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+
+    # Create the first job
+    first_step = request.steps[0]
+    context = request.initial_context
+    prompt = _render_prompt(first_step.prompt_template, context)
+
+    job_request = CreateJobRequest(
+        job_type=JobType(first_step.job_type),
+        prompt=prompt,
+    )
+    await create_job(session, job_request, workflow_id=row.id, step_index=0)
+
+    logger.info("Created workflow %s (%s) with %d steps", row.id, row.name, len(request.steps))
+    return row
+
+
+async def get_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> WorkflowRow | None:
+    return await session.get(WorkflowRow, workflow_id)
+
+
+async def list_workflows(
+    session: AsyncSession, limit: int = 20, offset: int = 0
+) -> tuple[list[WorkflowRow], int]:
+    count_result = await session.execute(select(func.count()).select_from(WorkflowRow))
+    total = count_result.scalar_one()
+
+    rows_result = await session.execute(
+        select(WorkflowRow).order_by(WorkflowRow.created_at.desc()).limit(limit).offset(offset)
+    )
+    rows = list(rows_result.scalars().all())
+    return rows, total
+
+
+async def get_workflow_jobs(session: AsyncSession, workflow_id: uuid.UUID) -> list[JobRow]:
+    result = await session.execute(
+        select(JobRow)
+        .where(JobRow.workflow_id == workflow_id)
+        .order_by(JobRow.step_index.asc(), JobRow.created_at.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def advance_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> None:
+    """Advance a workflow after a job completes.
+
+    This is the core orchestration function. Called by the worker after
+    any job belonging to a workflow finishes.
+    """
+    workflow = await session.get(WorkflowRow, workflow_id)
+    if workflow is None:
+        logger.error("advance_workflow: workflow %s not found", workflow_id)
+        return
+
+    if workflow.status in (
+        WorkflowStatus.SUCCEEDED.value,
+        WorkflowStatus.FAILED.value,
+        WorkflowStatus.CANCELED.value,
+    ):
+        logger.info("Workflow %s already in terminal state: %s", workflow_id, workflow.status)
+        return
+
+    step_defs = [StepDefinition.model_validate(s) for s in json.loads(workflow.step_definitions)]
+    context = json.loads(workflow.context)
+    current_index = workflow.current_step_index
+
+    # Find the job that just completed for the current step
+    result = await session.execute(
+        select(JobRow)
+        .where(JobRow.workflow_id == workflow_id, JobRow.step_index == current_index)
+        .order_by(JobRow.created_at.desc())
+        .limit(1)
+    )
+    completed_job = result.scalars().first()
+
+    if completed_job is None:
+        logger.error("No job found for workflow %s step %d", workflow_id, current_index)
+        return
+
+    # If the job failed, fail the workflow
+    if completed_job.status == JobStatus.FAILED.value:
+        now = datetime.now(timezone.utc)
+        await session.execute(
+            update(WorkflowRow)
+            .where(WorkflowRow.id == workflow_id)
+            .values(
+                status=WorkflowStatus.FAILED.value,
+                error_message=f"Step {current_index} ({step_defs[current_index].name}) failed: {completed_job.error_message}",
+                updated_at=now,
+                completed_at=now,
+            )
+        )
+        await session.commit()
+        logger.warning("Workflow %s failed at step %d", workflow_id, current_index)
+        return
+
+    # If the job is not yet succeeded, do nothing (still running or queued)
+    if completed_job.status != JobStatus.SUCCEEDED.value:
+        return
+
+    # Merge result into context
+    current_step = step_defs[current_index]
+    if completed_job.result_data:
+        context[current_step.output_key] = completed_job.result_data
+
+    # Determine next step
+    next_index = current_index + 1
+    if current_step.loop_to is not None and current_step.max_loop_count is not None:
+        # Check how many times we've looped
+        loop_count_result = await session.execute(
+            select(func.count())
+            .select_from(JobRow)
+            .where(JobRow.workflow_id == workflow_id, JobRow.step_index == current_step.loop_to)
+        )
+        loop_count = loop_count_result.scalar_one()
+        if loop_count < current_step.max_loop_count:
+            next_index = current_step.loop_to
+
+    # Skip steps whose conditions fail
+    while next_index < len(step_defs):
+        next_step = step_defs[next_index]
+        if next_step.condition is None or _evaluate_condition(next_step.condition, context):
+            break
+        logger.info(
+            "Workflow %s: skipping step %d (%s) — condition not met",
+            workflow_id, next_index, next_step.name,
+        )
+        next_index += 1
+
+    # Check if workflow is done
+    if next_index >= len(step_defs):
+        now = datetime.now(timezone.utc)
+        await session.execute(
+            update(WorkflowRow)
+            .where(WorkflowRow.id == workflow_id)
+            .values(
+                status=WorkflowStatus.SUCCEEDED.value,
+                context=json.dumps(context),
+                current_step_index=current_index,
+                updated_at=now,
+                completed_at=now,
+            )
+        )
+        await session.commit()
+        logger.info("Workflow %s completed successfully", workflow_id)
+        return
+
+    # Check if next step requires approval
+    next_step = step_defs[next_index]
+    if next_step.requires_approval:
+        await session.execute(
+            update(WorkflowRow)
+            .where(WorkflowRow.id == workflow_id)
+            .values(
+                status=WorkflowStatus.AWAITING_APPROVAL.value,
+                context=json.dumps(context),
+                current_step_index=next_index,
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+        logger.info(
+            "Workflow %s paused — step %d (%s) requires approval",
+            workflow_id, next_index, next_step.name,
+        )
+        return
+
+    # Create the next job
+    await _create_step_job(session, workflow_id, next_index, next_step, context)
+    logger.info(
+        "Workflow %s advanced to step %d (%s)",
+        workflow_id, next_index, next_step.name,
+    )
+
+
+async def approve_step(
+    session: AsyncSession,
+    workflow_id: uuid.UUID,
+    *,
+    approved: bool = True,
+    context_overrides: dict | None = None,
+) -> WorkflowRow:
+    """Approve (or skip) a step that's awaiting approval.
+
+    If approved=True, creates the job for the current step and resumes the workflow.
+    If approved=False, skips the step and advances to the next one (or completes).
+    context_overrides lets the user inject or modify context before the step runs.
+    """
+    workflow = await session.get(WorkflowRow, workflow_id)
+    if workflow is None:
+        raise ValueError(f"Workflow {workflow_id} not found")
+
+    if workflow.status != WorkflowStatus.AWAITING_APPROVAL.value:
+        raise ValueError(f"Workflow {workflow_id} is not awaiting approval (status={workflow.status})")
+
+    step_defs = [StepDefinition.model_validate(s) for s in json.loads(workflow.step_definitions)]
+    context = json.loads(workflow.context)
+    current_index = workflow.current_step_index
+
+    # Apply context overrides
+    if context_overrides:
+        context.update(context_overrides)
+
+    if approved:
+        # Create the job and resume
+        current_step = step_defs[current_index]
+        await session.execute(
+            update(WorkflowRow)
+            .where(WorkflowRow.id == workflow_id)
+            .values(
+                status=WorkflowStatus.RUNNING.value,
+                context=json.dumps(context),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+        await _create_step_job(session, workflow_id, current_index, current_step, context)
+        logger.info("Workflow %s: step %d approved, resuming", workflow_id, current_index)
+    else:
+        # Skip this step, try to advance
+        next_index = current_index + 1
+
+        # Skip any further steps whose conditions fail
+        while next_index < len(step_defs):
+            next_step = step_defs[next_index]
+            if next_step.condition is None or _evaluate_condition(next_step.condition, context):
+                break
+            next_index += 1
+
+        if next_index >= len(step_defs):
+            # Workflow done
+            now = datetime.now(timezone.utc)
+            await session.execute(
+                update(WorkflowRow)
+                .where(WorkflowRow.id == workflow_id)
+                .values(
+                    status=WorkflowStatus.SUCCEEDED.value,
+                    context=json.dumps(context),
+                    updated_at=now,
+                    completed_at=now,
+                )
+            )
+            await session.commit()
+            logger.info("Workflow %s: step skipped, workflow completed", workflow_id)
+        else:
+            next_step = step_defs[next_index]
+            if next_step.requires_approval:
+                await session.execute(
+                    update(WorkflowRow)
+                    .where(WorkflowRow.id == workflow_id)
+                    .values(
+                        status=WorkflowStatus.AWAITING_APPROVAL.value,
+                        context=json.dumps(context),
+                        current_step_index=next_index,
+                        updated_at=datetime.now(timezone.utc),
+                    )
+                )
+                await session.commit()
+                logger.info("Workflow %s: skipped to step %d, also requires approval", workflow_id, next_index)
+            else:
+                await session.execute(
+                    update(WorkflowRow)
+                    .where(WorkflowRow.id == workflow_id)
+                    .values(
+                        status=WorkflowStatus.RUNNING.value,
+                        context=json.dumps(context),
+                        current_step_index=next_index,
+                        updated_at=datetime.now(timezone.utc),
+                    )
+                )
+                await session.commit()
+                await _create_step_job(session, workflow_id, next_index, next_step, context)
+                logger.info("Workflow %s: step skipped, advanced to step %d", workflow_id, next_index)
+
+    await session.refresh(workflow)
+    return workflow
+
+
+async def _create_step_job(
+    session: AsyncSession,
+    workflow_id: uuid.UUID,
+    step_index: int,
+    step: StepDefinition,
+    context: dict,
+) -> None:
+    """Create a job for a workflow step and update workflow state."""
+    prompt = _render_prompt(step.prompt_template, context)
+
+    job_request = CreateJobRequest(
+        job_type=JobType(step.job_type),
+        prompt=prompt,
+    )
+    await create_job(session, job_request, workflow_id=workflow_id, step_index=step_index)
+
+    await session.execute(
+        update(WorkflowRow)
+        .where(WorkflowRow.id == workflow_id)
+        .values(
+            context=json.dumps(context),
+            current_step_index=step_index,
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    await session.commit()
+
+
+def _render_prompt(template: str, context: dict) -> str:
+    """Render a prompt template with workflow context.
+
+    Uses str.format_map with a defaultdict fallback so missing keys
+    render as {key_name} instead of raising KeyError.
+    """
+    safe_context = defaultdict(lambda: "{unknown}", {k: str(v) for k, v in context.items()})
+    try:
+        return template.format_map(safe_context)
+    except (KeyError, ValueError, IndexError):
+        # If format_map fails for any reason, return template with what we can substitute
+        result = template
+        for key, value in context.items():
+            result = result.replace(f"{{{key}}}", str(value))
+        return result
+
+
+def _evaluate_condition(condition: StepCondition, context: dict) -> bool:
+    """Evaluate a step condition against workflow context."""
+    value = context.get(condition.field)
+
+    if condition.operator == "exists":
+        return value is not None
+    elif condition.operator == "not_empty":
+        return bool(value)
+    elif condition.operator == "contains":
+        return condition.value is not None and condition.value in str(value or "")
+    elif condition.operator == "equals":
+        return str(value) == str(condition.value)
+    else:
+        logger.warning("Unknown condition operator: %s", condition.operator)
+        return True  # unknown operators pass by default
