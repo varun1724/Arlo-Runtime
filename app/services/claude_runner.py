@@ -29,6 +29,7 @@ async def run_claude(
     timeout: int | None = None,
     output_format: str = "json",
     allow_permissions: bool = False,
+    model: str | None = None,
 ) -> dict:
     """Run `claude -p` as an async subprocess and return parsed JSON output.
 
@@ -40,6 +41,7 @@ async def run_claude(
         allow_permissions: If True, add --dangerously-skip-permissions so Claude Code
             can write files and run bash without interactive approval. Required for
             builder jobs that need to create files and install dependencies.
+        model: Model to use (e.g. "sonnet", "opus"). Overrides config default.
 
     Returns:
         Parsed JSON dict from Claude Code CLI output.
@@ -56,8 +58,10 @@ async def run_claude(
     if allow_permissions:
         cmd.append("--dangerously-skip-permissions")
 
-    if settings.claude_model:
-        cmd.extend(["--model", settings.claude_model])
+    # Model selection: explicit param > config default
+    effective_model = model or settings.claude_model
+    if effective_model:
+        cmd.extend(["--model", effective_model])
 
     logger.info("Running Claude Code CLI (timeout=%ds, cwd=%s)", timeout, cwd or "(default)")
     logger.debug("Command: %s", " ".join(cmd[:4]) + " ...")

@@ -1,7 +1,11 @@
+import logging
 import os
+import shutil
 from pathlib import Path
 
 from app.core.config import settings
+
+logger = logging.getLogger("arlo.workspace")
 
 
 def create_job_workspace(job_id: str) -> str:
@@ -16,6 +20,21 @@ def validate_workspace_path(path: str) -> bool:
     resolved = os.path.realpath(path)
     root = os.path.realpath(settings.workspace_root)
     return resolved.startswith(root + os.sep) or resolved == root
+
+
+def delete_workspace(workspace_path: str) -> bool:
+    """Delete a job workspace directory. Returns True if deleted, False if not found."""
+    if not validate_workspace_path(workspace_path):
+        logger.warning("Refusing to delete path outside workspace root: %s", workspace_path)
+        return False
+
+    path = Path(workspace_path)
+    if not path.exists():
+        return False
+
+    shutil.rmtree(path)
+    logger.info("Deleted workspace: %s", workspace_path)
+    return True
 
 
 def scan_workspace_artifacts(workspace_path: str) -> list[dict]:

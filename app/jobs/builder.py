@@ -48,6 +48,7 @@ async def execute_builder_job(session: AsyncSession, job: JobRow) -> None:
             cwd=workspace_path,
             timeout=settings.builder_timeout_seconds,
             allow_permissions=True,
+            model=settings.builder_model,
         )
 
         # Step 3: Scan workspace for created artifacts

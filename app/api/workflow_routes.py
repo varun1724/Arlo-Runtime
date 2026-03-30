@@ -82,6 +82,32 @@ async def create_workflow_from_template(
     return _workflow_to_response(row)
 
 
+@router.post("/{workflow_id}/retry", response_model=WorkflowResponse)
+async def retry_workflow_step(
+    workflow_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> WorkflowResponse:
+    """Retry the current failed step of a workflow."""
+    try:
+        row = await workflow_service.retry_step(db, workflow_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _workflow_to_response(row)
+
+
+@router.post("/{workflow_id}/cancel", response_model=WorkflowResponse)
+async def cancel_workflow(
+    workflow_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> WorkflowResponse:
+    """Cancel a running workflow and all its queued jobs."""
+    try:
+        row = await workflow_service.cancel_workflow(db, workflow_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _workflow_to_response(row)
+
+
 @router.get("/templates")
 async def list_templates():
     return {

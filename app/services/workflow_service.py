@@ -60,6 +60,41 @@ async def get_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> Workflo
     return await session.get(WorkflowRow, workflow_id)
 
 
+async def cancel_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> WorkflowRow:
+    """Cancel a workflow and all its queued jobs."""
+    workflow = await session.get(WorkflowRow, workflow_id)
+    if workflow is None:
+        raise ValueError(f"Workflow {workflow_id} not found")
+
+    if workflow.status in (
+        WorkflowStatus.SUCCEEDED.value,
+        WorkflowStatus.FAILED.value,
+        WorkflowStatus.CANCELED.value,
+    ):
+        raise ValueError(f"Workflow {workflow_id} is already {workflow.status}")
+
+    now = datetime.now(timezone.utc)
+
+    # Cancel the workflow
+    await session.execute(
+        update(WorkflowRow)
+        .where(WorkflowRow.id == workflow_id)
+        .values(status=WorkflowStatus.CANCELED.value, updated_at=now, completed_at=now)
+    )
+
+    # Cancel all queued jobs belonging to this workflow
+    await session.execute(
+        update(JobRow)
+        .where(JobRow.workflow_id == workflow_id, JobRow.status == "queued")
+        .values(status="canceled", stop_reason="workflow_canceled", updated_at=now, completed_at=now)
+    )
+
+    await session.commit()
+    await session.refresh(workflow)
+    logger.info("Canceled workflow %s and its queued jobs", workflow_id)
+    return workflow
+
+
 async def list_workflows(
     session: AsyncSession, limit: int = 20, offset: int = 0
 ) -> tuple[list[WorkflowRow], int]:
@@ -118,21 +153,41 @@ async def advance_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> Non
         logger.error("No job found for workflow %s step %d", workflow_id, current_index)
         return
 
-    # If the job failed, fail the workflow
+    # If the job failed, check for auto-retry before failing the workflow
     if completed_job.status == JobStatus.FAILED.value:
+        current_step = step_defs[current_index]
+
+        # Count how many attempts have been made for this step
+        attempt_count_result = await session.execute(
+            select(func.count())
+            .select_from(JobRow)
+            .where(JobRow.workflow_id == workflow_id, JobRow.step_index == current_index)
+        )
+        attempt_count = attempt_count_result.scalar_one()
+
+        if current_step.max_retries > 0 and attempt_count <= current_step.max_retries:
+            # Auto-retry: create a new job for the same step
+            logger.info(
+                "Workflow %s: auto-retrying step %d (%s), attempt %d/%d",
+                workflow_id, current_index, current_step.name, attempt_count, current_step.max_retries + 1,
+            )
+            await _create_step_job(session, workflow_id, current_index, current_step, context)
+            return
+
+        # No retries left — fail the workflow
         now = datetime.now(timezone.utc)
         await session.execute(
             update(WorkflowRow)
             .where(WorkflowRow.id == workflow_id)
             .values(
                 status=WorkflowStatus.FAILED.value,
-                error_message=f"Step {current_index} ({step_defs[current_index].name}) failed: {completed_job.error_message}",
+                error_message=f"Step {current_index} ({current_step.name}) failed after {attempt_count} attempt(s): {completed_job.error_message}",
                 updated_at=now,
                 completed_at=now,
             )
         )
         await session.commit()
-        logger.warning("Workflow %s failed at step %d", workflow_id, current_index)
+        logger.warning("Workflow %s failed at step %d after %d attempts", workflow_id, current_index, attempt_count)
         return
 
     # If the job is not yet succeeded, do nothing (still running or queued)
@@ -312,6 +367,45 @@ async def approve_step(
                 await session.commit()
                 await _create_step_job(session, workflow_id, next_index, next_step, context)
                 logger.info("Workflow %s: step skipped, advanced to step %d", workflow_id, next_index)
+
+    await session.refresh(workflow)
+    return workflow
+
+
+async def retry_step(session: AsyncSession, workflow_id: uuid.UUID) -> WorkflowRow:
+    """Retry the current failed step of a workflow.
+
+    Only works when workflow status is 'failed'. Creates a new job for
+    the failed step and sets workflow back to 'running'.
+    """
+    workflow = await session.get(WorkflowRow, workflow_id)
+    if workflow is None:
+        raise ValueError(f"Workflow {workflow_id} not found")
+
+    if workflow.status != WorkflowStatus.FAILED.value:
+        raise ValueError(f"Workflow {workflow_id} is not failed (status={workflow.status})")
+
+    step_defs = [StepDefinition.model_validate(s) for s in json.loads(workflow.step_definitions)]
+    context = json.loads(workflow.context)
+    current_index = workflow.current_step_index
+    current_step = step_defs[current_index]
+
+    # Set workflow back to running
+    await session.execute(
+        update(WorkflowRow)
+        .where(WorkflowRow.id == workflow_id)
+        .values(
+            status=WorkflowStatus.RUNNING.value,
+            error_message=None,
+            completed_at=None,
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    await session.commit()
+
+    # Create a new job for the same step
+    await _create_step_job(session, workflow_id, current_index, current_step, context)
+    logger.info("Workflow %s: retrying step %d (%s)", workflow_id, current_index, current_step.name)
 
     await session.refresh(workflow)
     return workflow

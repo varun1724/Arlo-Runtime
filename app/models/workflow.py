@@ -41,6 +41,7 @@ class StepDefinition(BaseModel):
     loop_to: int | None = None
     max_loop_count: int | None = None
     requires_approval: bool = False  # if True, workflow pauses before this step
+    max_retries: int = 0  # auto-retry this step N times before failing the workflow
 
 
 # --- Request models ---

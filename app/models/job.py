@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 class JobType(StrEnum):
     RESEARCH = "research"
     BUILDER = "builder"
+    N8N = "n8n"
 
 
 class JobStatus(StrEnum):
@@ -61,6 +62,7 @@ class JobResponse(BaseModel):
     error_message: str | None = None
     stop_reason: str | None = None
     workspace_path: str | None = None
+    workspace_pinned: bool = False
     workflow_id: uuid.UUID | None = None
     step_index: int | None = None
     created_at: datetime
@@ -85,3 +87,17 @@ class JobProgressEvent(BaseModel):
     current_step: str | None = None
     progress_message: str | None = None
     iteration_count: int = 0
+
+
+# --- Event log model ---
+
+
+class JobEventResponse(BaseModel):
+    id: uuid.UUID
+    job_id: uuid.UUID
+    event_type: str
+    message: str | None = None
+    metadata_json: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

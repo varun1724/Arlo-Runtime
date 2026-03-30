@@ -20,9 +20,20 @@ class Settings(BaseSettings):
 
     # Claude Code CLI
     claude_command: str = "claude"
-    claude_model: str = ""
-    research_timeout_seconds: int = 600
-    builder_timeout_seconds: int = 900
+    claude_model: str = ""  # global default (overridden by per-type settings below)
+    research_model: str = "sonnet"
+    builder_model: str = "opus"
+    research_timeout_seconds: int = 1800
+    builder_timeout_seconds: int = 1200
+
+    # Workspace cleanup
+    workspace_retention_hours: int = 72
+
+    # n8n
+    n8n_base_url: str = "http://n8n:5678"
+    n8n_api_key: str = "arlo-n8n-dev-key"
+    n8n_poll_interval_seconds: int = 5
+    n8n_execution_timeout_seconds: int = 600
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

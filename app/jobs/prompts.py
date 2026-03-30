@@ -1,56 +1,82 @@
 """Prompt templates for Arlo job types."""
 
 RESEARCH_REPORT_SCHEMA = """{
-  "market_overview": "string — 2-4 paragraph overview of the market/domain",
+  "market_overview": "string — 3-5 paragraph overview with specific market size numbers, growth rates, and sources",
   "opportunities": [
     {
       "name": "string — concise opportunity name",
-      "description": "string — 2-3 sentence description",
-      "evidence": ["string — specific data points, funding rounds, articles, or trends that support this opportunity"],
-      "market_size_estimate": "string — estimated TAM/SAM with source if available",
+      "description": "string — 3-5 sentence description of the opportunity and why it exists now",
+      "evidence": [
+        "string — each piece of evidence must include: specific data point + source name + URL where possible"
+      ],
+      "key_competitors": [
+        {
+          "name": "string — company name",
+          "funding": "string — funding amount and stage if known",
+          "status": "string — active/acquired/failed/pivoted"
+        }
+      ],
+      "market_size_estimate": "string — TAM/SAM with source citation (e.g., '$4.2B TAM by 2027 — Grand View Research')",
       "competition_level": "low | medium | high",
       "feasibility": "low | medium | high"
     }
   ],
-  "trends": ["string — key market trends driving opportunities"],
-  "risks": ["string — risks and challenges in this market"],
+  "trends": ["string — key market trends with supporting data points"],
+  "risks": ["string — specific risks with real-world examples of failures"],
   "top_recommendations": [
     {
       "name": "string — name matching one of the opportunities above",
-      "reasoning": "string — why this is recommended, referencing evidence"
+      "reasoning": "string — detailed reasoning referencing specific evidence from above"
     }
   ]
 }"""
 
 
 def build_research_prompt(user_prompt: str) -> str:
-    """Build the full prompt for a research job.
+    """Build the full prompt for a standalone research job.
 
-    The prompt instructs Claude to use web search, gather evidence,
-    and produce a structured JSON opportunity report.
+    Instructs Claude to do deep, multi-pass web research with real sources.
     """
-    return f"""You are a startup research analyst. Your task is to research a market or domain and produce a structured opportunity report.
+    return f"""You are a senior startup research analyst. Your task is to produce a deeply researched, evidence-backed market analysis. This research must be thorough enough to withstand scrutiny from experienced investors.
 
 TASK: {user_prompt}
 
-INSTRUCTIONS:
-1. Use web search to find current, real data about this market/domain.
-2. Identify at least 5 startup opportunities with evidence.
-3. For each opportunity, provide specific evidence — funding rounds, market reports, competitor analysis, trend data.
-4. Assess competition level and feasibility realistically.
-5. Identify key market trends and risks.
-6. Recommend the top 3 opportunities with clear reasoning.
+RESEARCH METHODOLOGY — you must follow all of these steps:
+
+1. LANDSCAPE SCAN: Search the web broadly for this market/domain. Look at:
+   - Industry reports (Gartner, McKinsey, CB Insights, Grand View Research, etc.)
+   - Recent funding announcements (Crunchbase, TechCrunch, PitchBook coverage)
+   - Market trend analyses from the last 12 months
+   - Analyst commentary and expert opinions
+
+2. DEEP DIVE: For each opportunity you identify, search specifically for:
+   - Named companies operating in this space (with funding amounts)
+   - Companies that have been acquired (with acquisition prices if public)
+   - Companies that have FAILED in this space and why
+   - Specific market size estimates from named research firms
+   - Growth rate data with time periods
+
+3. CROSS-REFERENCE: For key claims, search for confirming or contradicting evidence:
+   - If you cite a market size, find at least one other source
+   - If you claim a trend, find specific data points supporting it
+   - If you identify low competition, verify by searching for startups in that exact niche
+
+4. IDENTIFY AT LEAST 7 OPPORTUNITIES with real evidence for each.
+
+5. RANK the top 3 with detailed reasoning that references specific evidence.
+
+QUALITY STANDARDS:
+- Every market size estimate MUST cite the source by name
+- Every opportunity MUST list at least 2 real companies (competitors or adjacent players)
+- Evidence MUST include specific numbers (funding amounts, revenue, user counts, growth %)
+- Do NOT use vague language like "growing rapidly" — use "growing at 23% CAGR (Source: X)"
+- Do NOT fabricate companies, funding rounds, or statistics
+- If you cannot find reliable data for a claim, say so explicitly rather than guessing
 
 OUTPUT FORMAT:
-You must respond with ONLY valid JSON matching this exact schema (no markdown, no code fences, no explanation outside the JSON):
+Respond with ONLY valid JSON matching this exact schema (no markdown, no code fences):
 
-{RESEARCH_REPORT_SCHEMA}
-
-IMPORTANT:
-- Use web search to gather real, current information. Do not fabricate data.
-- Market size estimates should cite sources when possible.
-- Evidence should be specific and verifiable.
-- Respond with ONLY the JSON object. No other text."""
+{RESEARCH_REPORT_SCHEMA}"""
 
 
 BUILDER_RESULT_SCHEMA = """{

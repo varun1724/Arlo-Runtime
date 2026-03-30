@@ -5,6 +5,7 @@ import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.db.models import JobRow
 from app.jobs.prompts import build_research_prompt
 from app.models.job import JobStatus, JobStopReason
@@ -44,7 +45,7 @@ async def execute_research_job(session: AsyncSession, job: JobRow) -> None:
             iteration_count=2,
         )
 
-        result = await run_claude(prompt)
+        result = await run_claude(prompt, allow_permissions=True, model=settings.research_model)
 
         # Step 3: Parse and store
         await update_job_progress(

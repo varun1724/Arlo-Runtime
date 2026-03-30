@@ -6,7 +6,7 @@ from app.api.routes import router as jobs_router
 from app.api.workflow_routes import router as workflows_router
 from app.db.base import Base
 from app.db.engine import engine
-from app.db.models import JobRow, WorkflowRow  # noqa: F401 — ensure models are registered
+from app.db.models import JobEventRow, JobRow, WorkflowRow  # noqa: F401 — ensure models are registered
 
 
 @asynccontextmanager
