@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # Workspace cleanup
     workspace_retention_hours: int = 72
 
+    # Trading engine
+    trading_engine_url: str = "http://arlo-trading-engine-api-1:8000"
+    trading_engine_api_key: str = "arlo-trading-dev-key"
+    trading_timeout_seconds: int = 3600
+
     # n8n
     n8n_base_url: str = "http://n8n:5678"
     n8n_api_key: str = "arlo-n8n-dev-key"

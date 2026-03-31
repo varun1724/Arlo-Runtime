@@ -6,6 +6,7 @@ from app.db.models import JobRow
 from app.jobs.builder import execute_builder_job
 from app.jobs.n8n import execute_n8n_job
 from app.jobs.research import execute_research_job
+from app.jobs.trading import execute_trading_job
 from app.models.job import JobStatus, JobStopReason
 from app.services.job_service import finalize_job
 
@@ -21,6 +22,8 @@ async def execute_job(session: AsyncSession, job: JobRow) -> None:
         await execute_builder_job(session, job)
     elif job.job_type == "n8n":
         await execute_n8n_job(session, job)
+    elif job.job_type == "trading":
+        await execute_trading_job(session, job)
     else:
         logger.error("Unknown job type: %s", job.job_type)
         await finalize_job(

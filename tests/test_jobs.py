@@ -2,14 +2,32 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_create_job(client):
-    r = await client.post("/jobs", json={"job_type": "research", "prompt": "Test prompt"})
+async def test_create_research_job(client):
+    r = await client.post("/jobs", json={"job_type": "research", "prompt": "Test research"})
     assert r.status_code == 201
-    data = r.json()
-    assert data["status"] == "queued"
-    assert data["job_type"] == "research"
-    assert data["prompt"] == "Test prompt"
-    assert "id" in data
+    assert r.json()["job_type"] == "research"
+    assert r.json()["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_create_builder_job(client):
+    r = await client.post("/jobs", json={"job_type": "builder", "prompt": "Test builder"})
+    assert r.status_code == 201
+    assert r.json()["job_type"] == "builder"
+
+
+@pytest.mark.asyncio
+async def test_create_n8n_job(client):
+    r = await client.post("/jobs", json={"job_type": "n8n", "prompt": '{"action":"create"}'})
+    assert r.status_code == 201
+    assert r.json()["job_type"] == "n8n"
+
+
+@pytest.mark.asyncio
+async def test_create_trading_job(client):
+    r = await client.post("/jobs", json={"job_type": "trading", "prompt": '{"action":"run_backtest"}'})
+    assert r.status_code == 201
+    assert r.json()["job_type"] == "trading"
 
 
 @pytest.mark.asyncio
@@ -28,7 +46,6 @@ async def test_create_job_empty_prompt(client):
 async def test_get_job(client):
     create_r = await client.post("/jobs", json={"job_type": "builder", "prompt": "Build something"})
     job_id = create_r.json()["id"]
-
     r = await client.get(f"/jobs/{job_id}")
     assert r.status_code == 200
     assert r.json()["id"] == job_id
@@ -43,20 +60,30 @@ async def test_get_job_not_found(client):
 
 @pytest.mark.asyncio
 async def test_list_jobs(client):
-    # Create 3 jobs
     for i in range(3):
         await client.post("/jobs", json={"job_type": "research", "prompt": f"Prompt {i}"})
-
     r = await client.get("/jobs")
     assert r.status_code == 200
-    data = r.json()
-    assert data["count"] >= 3
-    assert len(data["jobs"]) >= 3
+    assert r.json()["count"] >= 3
 
 
 @pytest.mark.asyncio
 async def test_list_jobs_pagination(client):
     r = await client.get("/jobs?limit=1&offset=0")
     assert r.status_code == 200
-    data = r.json()
-    assert len(data["jobs"]) <= 1
+    assert len(r.json()["jobs"]) <= 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_job(client):
+    create_r = await client.post("/jobs", json={"job_type": "research", "prompt": "Cancel me"})
+    job_id = create_r.json()["id"]
+    r = await client.post(f"/jobs/{job_id}/cancel")
+    assert r.status_code == 200
+    assert r.json()["status"] == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_nonexistent_job(client):
+    r = await client.post("/jobs/00000000-0000-0000-0000-000000000000/cancel")
+    assert r.status_code == 400

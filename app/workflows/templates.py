@@ -524,7 +524,433 @@ SIDE_HUSTLE_PIPELINE = {
     ],
 }
 
+FREELANCE_SCANNER_PIPELINE = {
+    "template_id": "freelance_scanner",
+    "name": "Freelance Opportunity Scanner",
+    "description": "Research freelance niches → Evaluate → Contrarian → Rank → Approve → Build n8n scanner → Deploy",
+    "required_context": ["skills"],
+    "optional_context": ["location_preference", "min_hourly_rate", "platforms"],
+    "steps": [
+        # ──────────────────────────────────────────────────
+        # Step 0: Research freelance niches
+        # ──────────────────────────────────────────────────
+        {
+            "name": "research_freelance_niches",
+            "job_type": "research",
+            "prompt_template": (
+                "You are a freelance market researcher. Research high-paying freelance "
+                "opportunities for someone with these skills.\n\n"
+                "Skills: {skills}\n"
+                "Location preference: {location_preference}\n"
+                "Minimum hourly rate: {min_hourly_rate}\n"
+                "Preferred platforms: {platforms}\n\n"
+                "INSTRUCTIONS:\n"
+                "1. Use web search to find real data on freelance demand for these skills.\n"
+                "2. Research these platforms specifically:\n"
+                "   - Upwork (search for recent job posts, check RSS feeds availability)\n"
+                "   - Toptal, Braintrust, Gun.io (vetted platforms)\n"
+                "   - We Work Remotely, RemoteOK, FlexJobs\n"
+                "   - LinkedIn freelance/contract postings\n"
+                "   - Industry-specific boards (e.g., Wellfound for startups)\n\n"
+                "3. For each platform + skill niche combination, find:\n"
+                "   - Average hourly rate range (search for real data)\n"
+                "   - Approximate number of new postings per week\n"
+                "   - Whether the platform has RSS/API/webhook access for monitoring\n"
+                "   - Platform fees (% taken from freelancer)\n\n"
+                "4. Search Reddit (r/freelance, r/upwork, r/webdev, r/datascience) for:\n"
+                "   - Real income reports from freelancers with these skills\n"
+                "   - Which platforms they recommend and why\n"
+                "   - Common pitfalls and red flags\n\n"
+                "5. Identify 8-10 distinct niche opportunities (skill + platform combinations).\n\n"
+                "OUTPUT: Respond with ONLY valid JSON:\n"
+                '{{\n'
+                '  "niches": [\n'
+                '    {{\n'
+                '      "name": "string — e.g., FastAPI Backend Dev on Toptal",\n'
+                '      "platform": "string — platform name",\n'
+                '      "platform_url": "string — URL for searching this niche",\n'
+                '      "has_rss_or_api": true,\n'
+                '      "hourly_rate_range": "string — e.g., $100-$175/hr",\n'
+                '      "weekly_postings_estimate": "string — e.g., 15-25 new posts/week",\n'
+                '      "platform_fee": "string — e.g., 10% on first $500, 5% after",\n'
+                '      "real_freelancer_reports": ["string — specific Reddit/forum quotes about income in this niche"],\n'
+                '      "monitoring_method": "string — RSS feed URL, API endpoint, or scrape approach"\n'
+                '    }}\n'
+                '  ],\n'
+                '  "market_overview": "string — 2-3 paragraph summary of the freelance market for these skills",\n'
+                '  "sources_consulted": ["string"]\n'
+                '}}'
+            ),
+            "output_key": "niche_research",
+            "timeout_override": 1800,
+        },
+        # ──────────────────────────────────────────────────
+        # Step 1: Evaluate niches
+        # ──────────────────────────────────────────────────
+        {
+            "name": "evaluate_niches",
+            "job_type": "research",
+            "prompt_template": (
+                "Evaluate freelance niche opportunities for feasibility and income potential.\n\n"
+                "NICHE RESEARCH:\n{niche_research}\n\n"
+                "Score each niche on these dimensions (1-10):\n"
+                "1. hourly_rate: How high is the pay? (10 = $150+/hr)\n"
+                "2. demand_volume: How many new posts per week? (10 = 50+)\n"
+                "3. competition: How easy to win work? (10 = low competition)\n"
+                "4. skill_match: How well do the required skills match? (10 = perfect match)\n"
+                "5. remote_friendly: Can this be done fully remotely? (10 = always remote)\n"
+                "6. monitorability: How easy to automate job scanning? (10 = has RSS/API)\n\n"
+                "Also identify for each:\n"
+                "- Best search keywords to find relevant postings\n"
+                "- Red flags to filter out (lowball rates, scam patterns, agencies)\n"
+                "- Ideal client profile (startup vs enterprise, industry)\n\n"
+                "OUTPUT: Respond with ONLY valid JSON:\n"
+                '{{\n'
+                '  "evaluations": [\n'
+                '    {{\n'
+                '      "name": "string",\n'
+                '      "platform": "string",\n'
+                '      "scores": {{\n'
+                '        "hourly_rate": 8,\n'
+                '        "demand_volume": 7,\n'
+                '        "competition": 6,\n'
+                '        "skill_match": 9,\n'
+                '        "remote_friendly": 10,\n'
+                '        "monitorability": 8\n'
+                '      }},\n'
+                '      "total_score": 48,\n'
+                '      "search_keywords": ["string"],\n'
+                '      "red_flags_to_filter": ["string"],\n'
+                '      "ideal_client": "string",\n'
+                '      "verdict": "string — 2-3 sentence assessment"\n'
+                '    }}\n'
+                '  ]\n'
+                '}}'
+            ),
+            "output_key": "evaluation",
+            "condition": {"field": "niche_research", "operator": "not_empty"},
+            "timeout_override": 1800,
+        },
+        # ──────────────────────────────────────────────────
+        # Step 2: Contrarian analysis
+        # ──────────────────────────────────────────────────
+        {
+            "name": "contrarian_analysis",
+            "job_type": "research",
+            "prompt_template": (
+                "You are a skeptic reviewing freelance opportunities. Find the reasons each could fail.\n\n"
+                "EVALUATION:\n{evaluation}\n\n"
+                "For EACH niche, use web search to investigate:\n\n"
+                "1. RACE TO BOTTOM: Is this niche being undercut by cheaper freelancers?\n"
+                "   - Search for complaints about rate compression\n"
+                "   - Are offshore freelancers flooding this category?\n\n"
+                "2. AI DISPLACEMENT: Is AI replacing this work?\n"
+                "   - Search for AI tools that automate this skill\n"
+                "   - Are clients starting to use AI instead of freelancers?\n\n"
+                "3. PLATFORM RISK: Is the platform healthy?\n"
+                "   - Recent layoffs, policy changes, fee increases?\n"
+                "   - Is the platform gaining or losing market share?\n\n"
+                "4. SATURATION: How crowded is this niche?\n"
+                "   - Search for \"how many freelancers\" + this skill on the platform\n"
+                "   - Proposal-to-hire ratios if available\n\n"
+                "5. VERDICT: survives | weakened | killed\n\n"
+                "OUTPUT: Respond with ONLY valid JSON:\n"
+                '{{\n'
+                '  "analyses": [\n'
+                '    {{\n'
+                '      "name": "string",\n'
+                '      "race_to_bottom_risk": "string — specific evidence",\n'
+                '      "ai_displacement_risk": "string — specific tools/trends",\n'
+                '      "platform_health": "string — recent news about the platform",\n'
+                '      "saturation_level": "string — low/medium/high with evidence",\n'
+                '      "verdict": "survives | weakened | killed",\n'
+                '      "verdict_reasoning": "string"\n'
+                '    }}\n'
+                '  ]\n'
+                '}}'
+            ),
+            "output_key": "contrarian",
+            "condition": {"field": "evaluation", "operator": "not_empty"},
+            "timeout_override": 1800,
+        },
+        # ──────────────────────────────────────────────────
+        # Step 3: Synthesis and ranking
+        # ──────────────────────────────────────────────────
+        {
+            "name": "synthesis_and_ranking",
+            "job_type": "research",
+            "prompt_template": (
+                "Synthesize all research into a final ranking of freelance niches to monitor.\n\n"
+                "NICHE RESEARCH:\n{niche_research}\n\n"
+                "EVALUATION:\n{evaluation}\n\n"
+                "CONTRARIAN:\n{contrarian}\n\n"
+                "INSTRUCTIONS:\n"
+                "1. Only include niches with 'survives' or 'weakened' verdicts.\n"
+                "2. Rank by total score weighted by contrarian verdict.\n"
+                "3. For the top 3, provide a DETAILED monitoring specification:\n"
+                "   - Exact RSS feed URL or API endpoint to poll\n"
+                "   - Search query parameters / keywords\n"
+                "   - Minimum rate filter\n"
+                "   - Negative keyword filters (what to exclude)\n"
+                "   - How often to poll (hourly, every 6h, daily)\n"
+                "   - Alert format: what info to include in notifications\n\n"
+                "OUTPUT: Respond with ONLY valid JSON:\n"
+                '{{\n'
+                '  "final_rankings": [\n'
+                '    {{\n'
+                '      "rank": 1,\n'
+                '      "name": "string",\n'
+                '      "platform": "string",\n'
+                '      "one_liner": "string — one sentence summary",\n'
+                '      "hourly_rate_range": "string",\n'
+                '      "total_score": 48,\n'
+                '      "surviving_risks": ["string"],\n'
+                '      "monitoring_spec": {{\n'
+                '        "feed_url": "string — RSS or API URL to poll",\n'
+                '        "search_keywords": ["string"],\n'
+                '        "negative_keywords": ["string — filter these out"],\n'
+                '        "min_rate_filter": "string — e.g., $75/hr",\n'
+                '        "poll_frequency": "string — e.g., every 6 hours",\n'
+                '        "alert_fields": ["string — what to include in notifications: title, rate, client, link"]\n'
+                '      }}\n'
+                '    }}\n'
+                '  ],\n'
+                '  "executive_summary": "string — overall recommendation"\n'
+                '}}'
+            ),
+            "output_key": "synthesis",
+            "condition": {"field": "contrarian", "operator": "not_empty"},
+            "timeout_override": 1800,
+        },
+        # ──────────────────────────────────────────────────
+        # Step 4: User picks niche(s)
+        # ──────────────────────────────────────────────────
+        {
+            "name": "user_picks_niche",
+            "job_type": "research",
+            "prompt_template": "Placeholder — gated by requires_approval.",
+            "output_key": "_approval_placeholder",
+            "requires_approval": True,
+        },
+        # ──────────────────────────────────────────────────
+        # Step 5: Build scanner n8n workflow
+        # ──────────────────────────────────────────────────
+        {
+            "name": "build_scanner_workflow",
+            "job_type": "builder",
+            "prompt_template": (
+                "Build an n8n workflow that continuously monitors freelance job boards "
+                "and sends daily digest alerts.\n\n"
+                "MONITORING SPECS:\n{synthesis}\n\n"
+                "BUILD REQUIREMENTS:\n"
+                "1. Create a valid n8n workflow JSON file called `workflow.json`.\n"
+                "2. The workflow must:\n"
+                "   - Use a Schedule Trigger (every 6-12 hours)\n"
+                "   - Poll RSS feeds or HTTP endpoints from the monitoring specs\n"
+                "   - Parse and extract: job title, rate/budget, client info, link, posting date\n"
+                "   - Filter by: minimum rate, keyword match, negative keyword exclusion\n"
+                "   - Deduplicate against previously seen postings (use a Code node with \n"
+                "     a simple in-memory or file-based seen-IDs check)\n"
+                "   - Format matching opportunities into a clean digest\n"
+                "   - Send via email (use the Send Email node with SMTP or Resend API)\n\n"
+                "3. Create a README.md explaining:\n"
+                "   - What this scanner monitors\n"
+                "   - How to configure email/Slack notifications\n"
+                "   - How to customize keywords and filters\n"
+                "   - Expected results per day\n\n"
+                "4. Create an `arlo_manifest.json` that includes the workflow JSON content.\n\n"
+                "IMPORTANT: Use real n8n node types. The workflow must be importable into n8n."
+            ),
+            "output_key": "build_result",
+            "condition": {"field": "synthesis", "operator": "not_empty"},
+            "timeout_override": 1200,
+        },
+        # ──────────────────────────────────────────────────
+        # Step 6: Deploy to n8n
+        # ──────────────────────────────────────────────────
+        {
+            "name": "deploy_scanner",
+            "job_type": "n8n",
+            "prompt_template": (
+                '{{"action": "create", "activate": true, "workflow_json_from_build": true, '
+                '"build_result": {build_result}}}'
+            ),
+            "output_key": "deploy_result",
+            "condition": {"field": "build_result", "operator": "not_empty"},
+        },
+    ],
+}
+
+STRATEGY_EVOLUTION_PIPELINE = {
+    "template_id": "strategy_evolution",
+    "name": "Trading Strategy Evolution",
+    "description": "Research → Generate → Backtest → Evaluate → Evolve (loop up to 50x) → Approve",
+    "required_context": ["starting_capital"],
+    "optional_context": ["preferred_instruments", "risk_tolerance", "strategy_family"],
+    "steps": [
+        # ──────────────────────────────────────────────────
+        # Step 0: Research strategies
+        # ──────────────────────────────────────────────────
+        {
+            "name": "research_strategies",
+            "job_type": "research",
+            "prompt_template": (
+                "You are a quantitative finance researcher. Research trading strategies that "
+                "could beat buy-and-hold (S&P 500) on a risk-adjusted basis.\n\n"
+                "Starting capital: {starting_capital}\n"
+                "Preferred instruments: {preferred_instruments}\n"
+                "Risk tolerance: {risk_tolerance}\n"
+                "Strategy family preference: {strategy_family}\n\n"
+                "RESEARCH REQUIREMENTS:\n"
+                "1. Use web search to find PROVEN strategies with academic or empirical support.\n"
+                "2. Focus on strategies viable at small scale ($1000-$5000).\n"
+                "3. Research: momentum, mean reversion, trend following, dual momentum,\n"
+                "   volatility targeting, seasonal effects, factor investing.\n"
+                "4. For each strategy, find:\n"
+                "   - Academic papers or empirical evidence\n"
+                "   - Historical Sharpe ratios and returns\n"
+                "   - What market conditions it works/fails in\n"
+                "   - Implementation complexity\n"
+                "5. Identify 5-8 candidate strategies.\n\n"
+                "OUTPUT: Respond with ONLY valid JSON:\n"
+                '{{\n'
+                '  "strategies": [\n'
+                '    {{\n'
+                '      "name": "string",\n'
+                '      "description": "string",\n'
+                '      "evidence": ["string — academic/empirical sources"],\n'
+                '      "historical_sharpe": "string",\n'
+                '      "market_conditions": "string — when it works/fails",\n'
+                '      "instruments": ["string — what to trade"],\n'
+                '      "timeframe": "string — daily, weekly, monthly",\n'
+                '      "complexity": "low | medium | high"\n'
+                '    }}\n'
+                '  ],\n'
+                '  "recommendation": "string — which strategy to try first and why"\n'
+                '}}'
+            ),
+            "output_key": "strategy_research",
+            "timeout_override": 1800,
+        },
+        # ──────────────────────────────────────────────────
+        # Step 1: Generate strategy code
+        # ──────────────────────────────────────────────────
+        {
+            "name": "generate_strategy",
+            "job_type": "research",
+            "prompt_template": (
+                "You are a quant developer. Based on this research, write a trading strategy "
+                "as Python code.\n\n"
+                "RESEARCH:\n{strategy_research}\n\n"
+                "PREVIOUS BACKTEST RESULTS (if any):\n{backtest_results}\n\n"
+                "Write a strategy class that inherits from BaseStrategy. The class must:\n"
+                "1. Implement `generate_signals(self, df)` which returns a DataFrame with:\n"
+                "   - 'signal' column: 1 for buy, -1 for sell, 0 for hold\n"
+                "   - 'size_pct' column: position size as fraction (0.0 to 1.0)\n"
+                "2. Use self.params dict for all tunable parameters\n"
+                "3. Only use data available at each bar (no look-ahead bias)\n"
+                "4. Import only: pandas as pd, numpy as np, from app.strategy.base import BaseStrategy\n\n"
+                "AVAILABLE DATA BEYOND PRICE:\n"
+                "- self.macro.get('VIXCLS', date) → VIX fear gauge (float or None)\n"
+                "- self.macro.get('T10Y2Y', date) → 10Y-2Y yield spread, negative = recession signal\n"
+                "- self.macro.get('FEDFUNDS', date) → Federal funds rate\n"
+                "- self.macro.get('BAMLH0A0HYM2', date) → High yield spread (credit stress)\n"
+                "- self.sentiment.get('SPY', date) → News sentiment score (-1 to +1, None if no data)\n"
+                "You can use these as filters (e.g., don't buy when VIX > 30) or signals.\n"
+                "Pass the date from df.index[i] to these accessors.\n\n"
+                "OUTPUT: Respond with ONLY valid JSON:\n"
+                '{{\n'
+                '  "action": "submit_and_backtest",\n'
+                '  "strategy": {{\n'
+                '    "name": "string — strategy name",\n'
+                '    "strategy_code": "string — full Python code",\n'
+                '    "parameters": {{}},\n'
+                '    "risk_constraints": {{\n'
+                '      "max_drawdown_pct": 0.25,\n'
+                '      "max_position_size_pct": 0.25\n'
+                '    }},\n'
+                '    "symbols": ["SPY"],\n'
+                '    "timeframe": "1D",\n'
+                '    "description": "string"\n'
+                '  }},\n'
+                '  "start_date": "2015-01-01",\n'
+                '  "end_date": "2024-12-31",\n'
+                '  "initial_capital": {starting_capital},\n'
+                '  "test_type": "walk_forward"\n'
+                '}}'
+            ),
+            "output_key": "strategy_submission",
+            "condition": {"field": "strategy_research", "operator": "not_empty"},
+            "timeout_override": 900,
+        },
+        # ──────────────────────────────────────────────────
+        # Step 2: Submit and backtest
+        # ──────────────────────────────────────────────────
+        {
+            "name": "submit_and_backtest",
+            "job_type": "trading",
+            "prompt_template": "{strategy_submission}",
+            "output_key": "backtest_results",
+            "condition": {"field": "strategy_submission", "operator": "not_empty"},
+        },
+        # ──────────────────────────────────────────────────
+        # Step 3: Evaluate and evolve
+        # ──────────────────────────────────────────────────
+        {
+            "name": "evaluate_and_evolve",
+            "job_type": "research",
+            "prompt_template": (
+                "You are a quant evaluating backtest results. Analyze these results and "
+                "either declare success or evolve the strategy.\n\n"
+                "BACKTEST RESULTS:\n{backtest_results}\n\n"
+                "CURRENT STRATEGY:\n{strategy_submission}\n\n"
+                "QUALIFYING THRESHOLDS:\n"
+                "- Sharpe ratio > 0.8 (SPY baseline ~0.5)\n"
+                "- Max drawdown < 25% (SPY baseline ~35%)\n"
+                "- Walk-forward consistency > 60% of folds profitable\n"
+                "- At least 30 total trades\n\n"
+                "ANALYSIS STEPS:\n"
+                "1. Does the strategy meet ALL thresholds? If yes, output the strategy as-is.\n"
+                "2. If not, analyze WHY it failed:\n"
+                "   - Which folds were unprofitable and why?\n"
+                "   - Was drawdown too high? Adjust position sizing or add stops.\n"
+                "   - Too few trades? Loosen entry conditions.\n"
+                "   - Poor Sharpe? The signal may be weak — try different indicators.\n"
+                "3. Modify the strategy code to address the specific failures.\n"
+                "4. Output the MODIFIED strategy for the next backtest iteration.\n\n"
+                "OUTPUT: Respond with ONLY valid JSON (same format as strategy_submission):\n"
+                '{{\n'
+                '  "action": "submit_and_backtest",\n'
+                '  "strategy": {{ ... modified strategy ... }},\n'
+                '  "start_date": "2015-01-01",\n'
+                '  "end_date": "2024-12-31",\n'
+                '  "initial_capital": {starting_capital},\n'
+                '  "test_type": "walk_forward",\n'
+                '  "evolution_notes": "string — what was changed and why"\n'
+                '}}'
+            ),
+            "output_key": "strategy_submission",
+            "condition": {"field": "backtest_results", "operator": "not_empty"},
+            "timeout_override": 900,
+            "loop_to": 2,
+            "max_loop_count": 50,
+        },
+        # ──────────────────────────────────────────────────
+        # Step 4: Approval gate
+        # ──────────────────────────────────────────────────
+        {
+            "name": "approve_strategy",
+            "job_type": "research",
+            "prompt_template": "Placeholder — gated by requires_approval.",
+            "output_key": "_approval_placeholder",
+            "requires_approval": True,
+        },
+    ],
+}
+
 TEMPLATES = {
     "startup_idea_pipeline": STARTUP_IDEA_PIPELINE,
     "side_hustle_pipeline": SIDE_HUSTLE_PIPELINE,
+    "freelance_scanner": FREELANCE_SCANNER_PIPELINE,
+    "strategy_evolution": STRATEGY_EVOLUTION_PIPELINE,
 }

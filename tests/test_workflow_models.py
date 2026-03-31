@@ -4,7 +4,6 @@ from app.models.workflow import (
     CreateWorkflowRequest,
     StepCondition,
     StepDefinition,
-    WorkflowResponse,
     WorkflowStatus,
 )
 
@@ -57,3 +56,41 @@ async def test_create_workflow_request():
 async def test_create_workflow_requires_steps():
     with pytest.raises(Exception):
         CreateWorkflowRequest(name="Empty", steps=[])
+
+
+@pytest.mark.asyncio
+async def test_step_with_loop_to():
+    step = StepDefinition(
+        name="evolve",
+        job_type="research",
+        prompt_template="Evolve",
+        output_key="evolved",
+        loop_to=2,
+        max_loop_count=10,
+    )
+    assert step.loop_to == 2
+    assert step.max_loop_count == 10
+
+
+@pytest.mark.asyncio
+async def test_step_with_max_retries():
+    step = StepDefinition(
+        name="risky",
+        job_type="research",
+        prompt_template="Risky step",
+        output_key="result",
+        max_retries=3,
+    )
+    assert step.max_retries == 3
+
+
+@pytest.mark.asyncio
+async def test_step_with_requires_approval():
+    step = StepDefinition(
+        name="approval",
+        job_type="research",
+        prompt_template="Needs approval",
+        output_key="approved",
+        requires_approval=True,
+    )
+    assert step.requires_approval is True

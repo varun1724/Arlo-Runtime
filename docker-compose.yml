@@ -39,6 +39,9 @@ services:
         condition: service_healthy
     volumes:
       - workspaces:/workspaces
+    networks:
+      - default
+      - arlo_network
 
   n8n:
     image: n8nio/n8n:latest
@@ -62,3 +65,8 @@ volumes:
   pgdata:
   workspaces:
   n8n_data:
+
+networks:
+  arlo_network:
+    name: arlo_network
+    external: true
