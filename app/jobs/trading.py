@@ -26,11 +26,18 @@ async def execute_trading_job(session: AsyncSession, job: JobRow) -> None:
     try:
         instructions = _parse_json_prompt(job.prompt)
     except ValueError as e:
+        # Don't fail — return bad metrics so the evolution loop continues
+        logger.warning("Trading job %s: bad JSON prompt, returning penalty metrics", job.id)
+        penalty_result = json.dumps({
+            "status": "failed",
+            "metrics": {"mean_sharpe_ratio": -999, "mean_total_return": 0, "mean_max_drawdown": 1.0, "consistency": 0, "total_trades_all_folds": 0},
+            "error_message": f"Strategy code produced invalid JSON: {str(e)[:200]}",
+        })
         await finalize_job(
             session, job.id,
-            status=JobStatus.FAILED,
-            error_message=f"Invalid trading job prompt: {e}",
-            stop_reason=JobStopReason.ERROR.value,
+            status=JobStatus.SUCCEEDED,
+            result_preview="Strategy code error — returning penalty metrics for evolution",
+            result_data=penalty_result,
         )
         return
 
@@ -62,22 +69,22 @@ async def execute_trading_job(session: AsyncSession, job: JobRow) -> None:
                 stop_reason=JobStopReason.ERROR.value,
             )
 
-    except TradingEngineError as e:
-        logger.error("Trading job %s failed: %s", job.id, e)
+    except (TradingEngineError, Exception) as e:
+        logger.error("Trading job %s error: %s", job.id, e)
+        # Return penalty metrics instead of failing — keeps the evolution loop alive
+        penalty_result = json.dumps({
+            "status": "failed",
+            "metrics": {"mean_sharpe_ratio": -999, "mean_total_return": 0, "mean_max_drawdown": 1.0, "consistency": 0, "total_trades_all_folds": 0},
+            "error_message": str(e)[:500],
+        })
         await finalize_job(
             session, job.id,
-            status=JobStatus.FAILED,
-            error_message=str(e),
-            stop_reason=JobStopReason.ERROR.value,
+            status=JobStatus.SUCCEEDED,
+            result_preview=f"Backtest error — penalty metrics: {str(e)[:100]}",
+            result_data=penalty_result,
         )
-    except Exception as e:
-        logger.exception("Trading job %s failed unexpectedly", job.id)
-        await finalize_job(
-            session, job.id,
-            status=JobStatus.FAILED,
-            error_message=str(e),
-            stop_reason=JobStopReason.ERROR.value,
-        )
+        return
+
 
 
 async def _submit_strategy_raw(
@@ -218,6 +225,12 @@ async def _run_backtest(
 
     result = resp.json()
 
+    # If the backtest itself failed (strategy error), still store results
+    # so the evolution loop can analyze what went wrong
+    if result.get("status") == "failed":
+        error_msg = result.get("error_message", "Strategy failed during backtest")
+        result["metrics"] = result.get("metrics") or {"error": error_msg, "sharpe_ratio": -999, "total_return": 0, "max_drawdown": 1.0}
+
     await update_job_progress(
         session, job.id,
         current_step="processing_results",
@@ -229,6 +242,9 @@ async def _run_backtest(
     metrics = result.get("metrics", {})
     preview = _build_preview(metrics, result.get("benchmark_metrics", {}))
 
+    # Auto-save if strategy passes qualifying thresholds
+    _check_and_save_winner(metrics, instructions, str(job.id))
+
     await finalize_job(
         session, job.id,
         status=JobStatus.SUCCEEDED,
@@ -236,6 +252,66 @@ async def _run_backtest(
         result_data=json.dumps(result),
     )
     logger.info("Trading job %s completed: backtest %s", job.id, backtest_id)
+
+
+QUALIFYING_THRESHOLDS = {
+    "sharpe_min": 0.8,
+    "max_drawdown_max": 0.25,
+    "consistency_min": 0.6,
+    "min_trades": 30,
+}
+
+
+def _check_and_save_winner(metrics: dict, instructions: dict, job_id: str) -> None:
+    """Check if backtest metrics pass all thresholds. If yes, save to disk."""
+    import os
+    from datetime import datetime
+    from pathlib import Path
+
+    sharpe = metrics.get("mean_sharpe_ratio", metrics.get("sharpe_ratio", -999))
+    drawdown = metrics.get("mean_max_drawdown", metrics.get("max_drawdown", 1.0))
+    consistency = metrics.get("consistency", 0)
+    trades = metrics.get("total_trades_all_folds", metrics.get("total_trades", 0))
+
+    passes = (
+        sharpe >= QUALIFYING_THRESHOLDS["sharpe_min"]
+        and drawdown <= QUALIFYING_THRESHOLDS["max_drawdown_max"]
+        and consistency >= QUALIFYING_THRESHOLDS["consistency_min"]
+        and trades >= QUALIFYING_THRESHOLDS["min_trades"]
+    )
+
+    if not passes:
+        return
+
+    # Save winning strategy
+    save_dir = Path("/workspaces/winning_strategies")
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"winner_{timestamp}_sharpe{sharpe:.3f}.json"
+    filepath = save_dir / filename
+
+    strategy_data = instructions.get("strategy", {})
+    save_data = {
+        "timestamp": timestamp,
+        "job_id": job_id,
+        "metrics": metrics,
+        "strategy": strategy_data,
+        "thresholds_passed": {
+            "sharpe": f"{sharpe:.4f} >= {QUALIFYING_THRESHOLDS['sharpe_min']}",
+            "drawdown": f"{drawdown:.4f} <= {QUALIFYING_THRESHOLDS['max_drawdown_max']}",
+            "consistency": f"{consistency:.4f} >= {QUALIFYING_THRESHOLDS['consistency_min']}",
+            "trades": f"{trades} >= {QUALIFYING_THRESHOLDS['min_trades']}",
+        },
+    }
+
+    with open(filepath, "w") as f:
+        json.dump(save_data, f, indent=2)
+
+    logger.info(
+        "*** WINNING STRATEGY FOUND *** Sharpe=%.4f, saved to %s",
+        sharpe, filepath,
+    )
 
 
 def _build_preview(metrics: dict, benchmark: dict) -> str:

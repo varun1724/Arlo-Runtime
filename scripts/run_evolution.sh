@@ -6,6 +6,7 @@ BASE="${ARLO_BASE_URL:-http://localhost:8000}"
 CAPITAL="${1:-1000}"
 INSTRUMENTS="${2:-SPY,QQQ,IWM}"
 RISK="${3:-moderate}"
+SEED_FILE="${4:-}"
 
 echo "============================================"
 echo "  Trading Strategy Evolution"
@@ -13,6 +14,9 @@ echo "============================================"
 echo "  Capital: \$$CAPITAL"
 echo "  Instruments: $INSTRUMENTS"
 echo "  Risk tolerance: $RISK"
+if [ -n "$SEED_FILE" ]; then
+echo "  Seed strategy: $SEED_FILE"
+fi
 echo ""
 echo "  Claude will research, generate, backtest,"
 echo "  and evolve strategies automatically."
@@ -20,11 +24,38 @@ echo "  This may run for a long time."
 echo "============================================"
 echo ""
 
-WORKFLOW_ID=$(curl -s -X POST "$BASE/workflows/from-template/strategy_evolution" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{\"initial_context\":{\"starting_capital\":\"$CAPITAL\",\"preferred_instruments\":\"$INSTRUMENTS\",\"risk_tolerance\":\"$RISK\",\"strategy_family\":\"any\",\"backtest_results\":\"none yet\"}}" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+# Load seed strategy if provided
+SEED="none"
+if [ -n "$SEED_FILE" ] && [ -f "$SEED_FILE" ]; then
+  SEED=$(python3 -c "
+import sys, json
+with open('$SEED_FILE') as f:
+    print(json.dumps(f.read()))
+" | python3 -c "import sys; print(sys.stdin.read().strip())")
+fi
+
+WORKFLOW_ID=$(python3 -c "
+import json, subprocess
+ctx = {
+    'starting_capital': '$CAPITAL',
+    'preferred_instruments': '$INSTRUMENTS',
+    'risk_tolerance': '$RISK',
+    'strategy_family': 'any',
+    'backtest_results': 'none yet',
+    'seed_strategy': $SEED if '$SEED_FILE' else 'none',
+}
+payload = json.dumps({'initial_context': ctx})
+result = subprocess.run(
+    ['curl', '-s', '-X', 'POST', '$BASE/workflows/from-template/strategy_evolution',
+     '-H', 'Authorization: Bearer $TOKEN', '-H', 'Content-Type: application/json',
+     '-d', payload],
+    capture_output=True, text=True
+)
+data = json.loads(result.stdout)
+print(data.get('id', ''))
+if 'detail' in data:
+    import sys; print(f'ERROR: {data[\"detail\"]}', file=sys.stderr); sys.exit(1)
+")
 
 echo "Created workflow: $WORKFLOW_ID"
 echo ""
@@ -92,6 +123,22 @@ if bench:
     print(f'  Sharpe: {bench.get(\"sharpe_ratio\",0):.4f}')
 "
 
+    # Save the best strategy to a file for future runs
+    SAVE_FILE="best_strategy_$(date +%Y%m%d_%H%M%S).json"
+    echo "$RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+ctx = d.get('context', {})
+strategy_raw = ctx.get('strategy_submission', '{}')
+results_raw = ctx.get('backtest_results', '{}')
+with open('$SAVE_FILE', 'w') as f:
+    json.dump({
+        'strategy_submission': strategy_raw,
+        'backtest_results': results_raw,
+        'workflow_id': d.get('id', ''),
+    }, f, indent=2)
+"
+    echo "  Strategy saved to: $SAVE_FILE"
     echo ""
     echo "  [1] Accept — stop evolution, this strategy is good"
     echo "  [0] Skip — end without accepting"

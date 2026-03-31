@@ -786,7 +786,7 @@ STRATEGY_EVOLUTION_PIPELINE = {
     "name": "Trading Strategy Evolution",
     "description": "Research → Generate → Backtest → Evaluate → Evolve (loop up to 50x) → Approve",
     "required_context": ["starting_capital"],
-    "optional_context": ["preferred_instruments", "risk_tolerance", "strategy_family"],
+    "optional_context": ["preferred_instruments", "risk_tolerance", "strategy_family", "seed_strategy"],
     "steps": [
         # ──────────────────────────────────────────────────
         # Step 0: Research strategies
@@ -801,12 +801,30 @@ STRATEGY_EVOLUTION_PIPELINE = {
                 "Preferred instruments: {preferred_instruments}\n"
                 "Risk tolerance: {risk_tolerance}\n"
                 "Strategy family preference: {strategy_family}\n\n"
+                "AVAILABLE INSTRUMENTS: SPY, QQQ, IWM, VTI, GLD, TLT, AGG, EFA\n"
+                "(stocks, bonds, gold, international — multi-asset rotation is encouraged)\n\n"
                 "RESEARCH REQUIREMENTS:\n"
                 "1. Use web search to find PROVEN strategies with academic or empirical support.\n"
                 "2. Focus on strategies viable at small scale ($1000-$5000).\n"
-                "3. Research: momentum, mean reversion, trend following, dual momentum,\n"
-                "   volatility targeting, seasonal effects, factor investing.\n"
-                "4. For each strategy, find:\n"
+                "3. PRIORITIZE multi-asset rotation strategies. Proven approaches:\n"
+                "   - Keller's VAA (Vigilant Asset Allocation) — breadth momentum, Sharpe 1.0-1.4\n"
+                "   - Antonacci's Dual Momentum (GEM) — SPY vs EFA vs AGG, Sharpe 0.85-1.0\n"
+                "   - Cross-asset momentum ranking + trend filter + vol targeting, Sharpe 0.95-1.25\n"
+                "   - Risk parity with vol targeting, Sharpe 0.80-1.05\n"
+                "   - Regime-based rotation using VIX + yield curve, Sharpe 0.85-1.05\n"
+                "   - Stacked signal ensemble (multiple weak signals combined), Sharpe 0.95-1.30\n"
+                "4. Also search for ADVANCED approaches:\n"
+                "   - Cross-asset lead-lag (credit spreads predict equity drops)\n"
+                "   - Carry trade signals across countries (affects EFA vs SPY)\n"
+                "   - Dispersion/correlation regime detection\n"
+                "   - Hierarchical Risk Parity (Lopez de Prado 2016)\n"
+                "   - Black-Litterman allocation with momentum views\n"
+                "   - Fractal market indicators (Hurst exponent)\n"
+                "   - Options-implied vol term structure signals\n"
+                "   - Intermarket divergence (when gold and bonds disagree)\n"
+                "   - Tax-loss harvesting calendar effects (Dec selling, Jan buying)\n"
+                "   - Political/Fed meeting cycle effects on volatility\n"
+                "5. For each strategy, find:\n"
                 "   - Academic papers or empirical evidence\n"
                 "   - Historical Sharpe ratios and returns\n"
                 "   - What market conditions it works/fails in\n"
@@ -843,21 +861,52 @@ STRATEGY_EVOLUTION_PIPELINE = {
                 "as Python code.\n\n"
                 "RESEARCH:\n{strategy_research}\n\n"
                 "PREVIOUS BACKTEST RESULTS (if any):\n{backtest_results}\n\n"
-                "Write a strategy class that inherits from BaseStrategy. The class must:\n"
-                "1. Implement `generate_signals(self, df)` which returns a DataFrame with:\n"
-                "   - 'signal' column: 1 for buy, -1 for sell, 0 for hold\n"
-                "   - 'size_pct' column: position size as fraction (0.0 to 1.0)\n"
+                "SEED STRATEGY (if provided, use this as a starting point and improve it):\n"
+                "{seed_strategy}\n\n"
+                "Write a MULTI-ASSET strategy class that inherits from BaseStrategy.\n\n"
+                "MULTI-ASSET API (you MUST use this):\n"
+                "  class MyStrategy(BaseStrategy):\n"
+                "      name = 'My Strategy'\n"
+                "      multi_asset = True\n\n"
+                "      def generate_signals(self, data: dict) -> dict:\n"
+                "          # data = {{'SPY': ohlcv_df, 'TLT': ohlcv_df, 'GLD': ohlcv_df, ...}}\n"
+                "          # Each df has columns: open, high, low, close, volume\n"
+                "          # Return: {{'SPY': signals_df, 'TLT': signals_df, ...}}\n"
+                "          # Each signals_df has 'signal' (1=buy, -1=sell, 0=hold) and 'size_pct' columns\n"
+                "          # size_pct across all assets should sum to <= 0.95 at any bar\n"
+                "          pass\n\n"
+                "RULES:\n"
+                "1. Set multi_asset = True on the class\n"
                 "2. Use self.params dict for all tunable parameters\n"
                 "3. Only use data available at each bar (no look-ahead bias)\n"
-                "4. Import only: pandas as pd, numpy as np, from app.strategy.base import BaseStrategy\n\n"
-                "AVAILABLE DATA BEYOND PRICE:\n"
-                "- self.macro.get('VIXCLS', date) → VIX fear gauge (float or None)\n"
-                "- self.macro.get('T10Y2Y', date) → 10Y-2Y yield spread, negative = recession signal\n"
-                "- self.macro.get('FEDFUNDS', date) → Federal funds rate\n"
-                "- self.macro.get('BAMLH0A0HYM2', date) → High yield spread (credit stress)\n"
-                "- self.sentiment.get('SPY', date) → News sentiment score (-1 to +1, None if no data)\n"
-                "You can use these as filters (e.g., don't buy when VIX > 30) or signals.\n"
-                "Pass the date from df.index[i] to these accessors.\n\n"
+                "4. Import only: pandas as pd, numpy as np, from app.strategy.base import BaseStrategy\n"
+                "5. Rebalance monthly (every ~21 bars). On rebalance: sell old holdings, buy new.\n"
+                "6. Use bar i+1 for execution after computing signals on bar i (avoid look-ahead)\n\n"
+                "AVAILABLE INSTRUMENTS: SPY, QQQ, IWM, VTI, GLD, TLT, AGG, EFA\n"
+                "  Stocks: SPY (US large), QQQ (tech), IWM (small-cap), VTI (total market), EFA (international)\n"
+                "  Bonds: TLT (long-term), AGG (aggregate)\n"
+                "  Gold: GLD\n\n"
+                "AVAILABLE MACRO DATA:\n"
+                "- self.macro.get('VIXCLS', date) → VIX fear gauge\n"
+                "- self.macro.get('T10Y2Y', date) → yield curve (negative = recession signal)\n"
+                "- self.macro.get('FEDFUNDS', date) → Fed funds rate\n"
+                "- self.macro.get('BAMLH0A0HYM2', date) → high yield spread (credit stress)\n"
+                "- self.sentiment.get('SPY', date) → news sentiment (-1 to +1)\n\n"
+                "PROVEN STRATEGIES TO DRAW FROM (Sharpe 0.85-1.4 historically):\n"
+                "1. DUAL MOMENTUM (Antonacci): Hold SPY if 12mo return > EFA and > risk-free, else EFA, else AGG\n"
+                "2. VIGILANT AA (Keller): Score momentum = 12*(p/p1)+4*(p/p3)+2*(p/p6)+(p/p12). Count positive aggressive assets (breadth). Allocate aggressive/defensive by breadth ratio.\n"
+                "3. CROSS-ASSET MOMENTUM: Rank all 8 ETFs by 12-1 momentum. Hold top 3 above 200-day SMA. Risk-parity weight.\n"
+                "4. VOL TARGETING (Moreira & Muir 2017): Scale positions by inverse of realized volatility. Target 10% annual vol.\n"
+                "5. REGIME ROTATION: Use VIX + yield curve to define 4 regimes. Each regime has preset allocation to stocks/bonds/gold.\n"
+                "6. STACKED ENSEMBLE: Combine momentum rank + trend filter + VIX regime + yield curve signal. Weight by rolling Sharpe.\n\n"
+                "CREATIVE EDGE SIGNALS (combine with above for alpha):\n"
+                "- CREDIT LEAD-LAG: HY spread (BAMLH0A0HYM2) widens 2-4 weeks before equity drops. If HY spread rising fast, reduce equities early.\n"
+                "- VIX MEAN REVERSION: Buy equities aggressively when VIX > 35 (panic = opportunity). Reduce when VIX < 12 (complacency).\n"
+                "- YIELD CURVE VELOCITY: Rate of change of T10Y2Y matters more than level. Rapidly flattening = more bearish than stable inversion.\n"
+                "- SENTIMENT DIVERGENCE: When price momentum is positive but news sentiment turning negative, momentum is about to fail.\n"
+                "- CORRELATION REGIME: When stock-bond correlation goes positive (both falling), switch to gold-only.\n"
+                "- CALENDAR EFFECTS: Turn-of-month (last+first 3 days) captures ~70% of monthly equity returns.\n\n"
+                "COMBINE APPROACHES for highest Sharpe. Example: VAA breadth + vol targeting + credit lead-lag + VIX mean reversion.\n\n"
                 "OUTPUT: Respond with ONLY valid JSON:\n"
                 '{{\n'
                 '  "action": "submit_and_backtest",\n'
@@ -869,11 +918,11 @@ STRATEGY_EVOLUTION_PIPELINE = {
                 '      "max_drawdown_pct": 0.25,\n'
                 '      "max_position_size_pct": 0.25\n'
                 '    }},\n'
-                '    "symbols": ["SPY"],\n'
+                '    "symbols": ["SPY", "QQQ", "IWM", "VTI", "GLD", "TLT", "AGG", "EFA"],\n'
                 '    "timeframe": "1D",\n'
                 '    "description": "string"\n'
                 '  }},\n'
-                '  "start_date": "2015-01-01",\n'
+                '  "start_date": "2005-01-01",\n'
                 '  "end_date": "2024-12-31",\n'
                 '  "initial_capital": {starting_capital},\n'
                 '  "test_type": "walk_forward"\n'
@@ -909,20 +958,52 @@ STRATEGY_EVOLUTION_PIPELINE = {
                 "- Max drawdown < 25% (SPY baseline ~35%)\n"
                 "- Walk-forward consistency > 60% of folds profitable\n"
                 "- At least 30 total trades\n\n"
+                "MULTI-ASSET API (your strategy MUST use this):\n"
+                "  class MyStrategy(BaseStrategy):\n"
+                "      multi_asset = True\n"
+                "      def generate_signals(self, data: dict) -> dict:\n"
+                "          # data = {{'SPY': df, 'TLT': df, ...}} each with open/high/low/close/volume\n"
+                "          # Return {{'SPY': signals_df, 'TLT': signals_df, ...}}\n"
+                "          # signals_df has 'signal' (1/-1/0) and 'size_pct' columns\n"
+                "          # Sum of size_pct across all assets <= 0.95 at any bar\n\n"
+                "AVAILABLE INSTRUMENTS: SPY, QQQ, IWM, VTI, GLD, TLT, AGG, EFA\n"
+                "MACRO: self.macro.get('VIXCLS'|'T10Y2Y'|'FEDFUNDS'|'BAMLH0A0HYM2', date)\n"
+                "SENTIMENT: self.sentiment.get('SPY', date)\n\n"
+                "PROVEN APPROACHES (combine for best results):\n"
+                "1. DUAL MOMENTUM: SPY vs EFA, loser goes to AGG. Sharpe ~0.85-1.0\n"
+                "2. VAA BREADTH: Score = 12*(p/p1)+4*(p/p3)+2*(p/p6)+(p/p12). Count positive aggressive assets. Allocate by breadth ratio. Sharpe ~1.0-1.4\n"
+                "3. CROSS-ASSET MOMENTUM: Rank all ETFs by 12-1 momentum, hold top 3 above 200d SMA, risk-parity weight. Sharpe ~0.95-1.2\n"
+                "4. VOL TARGETING: Scale all positions by target_vol/realized_vol. Adds ~0.10-0.25 Sharpe.\n"
+                "5. REGIME ROTATION: VIX<20 + yield>0 = risk-on (stocks). VIX>20 or yield<0 = defensive (bonds/gold).\n"
+                "6. STACKED ENSEMBLE: Combine momentum + trend + VIX + yield curve signals, weighted by rolling Sharpe.\n\n"
+                "CREATIVE EDGE SIGNALS:\n"
+                "- CREDIT LEAD-LAG: HY spread widens before equity drops. If BAMLH0A0HYM2 rising fast, reduce equities.\n"
+                "- VIX MEAN REVERSION: VIX > 35 = panic buy opportunity. VIX < 12 = reduce exposure.\n"
+                "- YIELD CURVE VELOCITY: Rate of change of T10Y2Y matters more than level.\n"
+                "- CORRELATION REGIME: Stock-bond both falling = switch to gold.\n"
+                "- CALENDAR: Turn-of-month (last+first 3 trading days) captures ~70% of monthly returns.\n\n"
+                "COMMON BUGS TO AVOID:\n"
+                "- Always set multi_asset = True on the class\n"
+                "- Return dict of DataFrames, not a single DataFrame\n"
+                "- Use data[symbol].iloc[i]['close'] not data['close']\n"
+                "- Check 'if symbol in data' before accessing\n"
+                "- Rebalance monthly (every ~21 bars), not every bar\n"
+                "- Use i+1 for execution (avoid look-ahead bias)\n"
+                "- Initialize signals for ALL symbols in data, not just the ones you trade\n\n"
+                "MUTATION RULE:\n"
+                "Every 10 iterations, SWITCH to a fundamentally different strategy family.\n"
+                "If Sharpe hasn't improved >0.01 for 5 iterations, switch immediately.\n"
+                "Try combining approaches: e.g., VAA breadth + vol targeting + macro overlay.\n\n"
                 "ANALYSIS STEPS:\n"
                 "1. Does the strategy meet ALL thresholds? If yes, output the strategy as-is.\n"
-                "2. If not, analyze WHY it failed:\n"
-                "   - Which folds were unprofitable and why?\n"
-                "   - Was drawdown too high? Adjust position sizing or add stops.\n"
-                "   - Too few trades? Loosen entry conditions.\n"
-                "   - Poor Sharpe? The signal may be weak — try different indicators.\n"
-                "3. Modify the strategy code to address the specific failures.\n"
-                "4. Output the MODIFIED strategy for the next backtest iteration.\n\n"
+                "2. If Sharpe is -999, the strategy CODE had a bug. Fix the code, don't tweak parameters.\n"
+                "3. If not passing, analyze WHY and modify the strategy.\n"
+                "4. Output the MODIFIED strategy for the next backtest.\n\n"
                 "OUTPUT: Respond with ONLY valid JSON (same format as strategy_submission):\n"
                 '{{\n'
                 '  "action": "submit_and_backtest",\n'
                 '  "strategy": {{ ... modified strategy ... }},\n'
-                '  "start_date": "2015-01-01",\n'
+                '  "start_date": "2005-01-01",\n'
                 '  "end_date": "2024-12-31",\n'
                 '  "initial_capital": {starting_capital},\n'
                 '  "test_type": "walk_forward",\n'
@@ -933,18 +1014,11 @@ STRATEGY_EVOLUTION_PIPELINE = {
             "condition": {"field": "backtest_results", "operator": "not_empty"},
             "timeout_override": 900,
             "loop_to": 2,
-            "max_loop_count": 50,
+            "max_loop_count": 400,
         },
-        # ──────────────────────────────────────────────────
-        # Step 4: Approval gate
-        # ──────────────────────────────────────────────────
-        {
-            "name": "approve_strategy",
-            "job_type": "research",
-            "prompt_template": "Placeholder — gated by requires_approval.",
-            "output_key": "_approval_placeholder",
-            "requires_approval": True,
-        },
+        # No approval gate — winning strategies are auto-saved to
+        # /workspaces/winning_strategies/ by the trading executor.
+        # The loop runs the full 400 iterations to find as many winners as possible.
     ],
 }
 
