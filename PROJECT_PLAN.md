@@ -647,194 +647,131 @@ This hybrid model is the intended Arlo architecture.
 
 ---
 
-## 18. Delivery Phases
+## 18. Delivery Phases — Actual Implementation Status
 
-## Phase 1 — Runtime foundation
+### Phase 1 — Runtime foundation [COMPLETE]
 
-Goal: create the backend spine.
+* FastAPI + Postgres + Worker polling loop
+* Docker Compose stack (Mac + Windows compatible)
+* Job model with full lifecycle (queued → running → succeeded/failed/canceled)
+* Bearer token auth
+* SSE streaming for real-time job progress
 
-Deliverables:
+### Phase 2 — Research jobs [COMPLETE]
 
-* FastAPI service
-* Postgres (worker polls Postgres directly — no Redis)
-* worker service
-* Docker Compose stack (works identically on Mac and Windows)
-* job model + persistence
-* basic auth token
-* Tailscale networking setup
+* Claude Code CLI (`claude -p`) with web search via `--dangerously-skip-permissions`
+* Structured JSON research reports with source citations
+* Sonnet model for research (cost-efficient)
 
-## Phase 2 — First real async domain: research
+### Phase 3 — Builder jobs [COMPLETE]
 
-Goal: prove the job flow end-to-end with the first target job — "research startup opportunities in a market/domain."
+* Claude Code autonomous coding in sandboxed per-job workspaces
+* Non-root user in worker container (required for `--dangerously-skip-permissions`)
+* `arlo_manifest.json` for structured build output
+* Opus model for code generation
 
-Deliverables:
+### Phase 4 — Workflow orchestration [COMPLETE]
 
-* research job request/result models
-* create job via API
-* worker executes research job using Claude Code CLI (`claude -p`) with web search
-* SSE endpoint for real-time progress streaming
-* structured opportunity report as output
-* status + result retrieval
+* Multi-step workflows with context passing between steps
+* Conditional step execution, loop-back support (up to N iterations)
+* Human approval gates (`requires_approval` on steps)
+* `advance_workflow()` orchestration after each job completes
+* Workflow templates: startup idea pipeline, side hustle automation, freelance scanner, strategy evolution
 
-## Phase 3 — Async builder jobs
+### Phase 5 — Deep multi-pass research [COMPLETE]
 
-Goal: move builder into true backend execution using Claude Code.
+* 6-step startup pipeline: landscape scan → deep dive → contrarian analysis → synthesis → approve → build MVP
+* Per-job-type model selection (sonnet for research, opus for builder)
+* Research prompts require web search, source citations, cross-referencing
 
-Deliverables:
+### Phase 6 — n8n integration [COMPLETE]
 
-* builder job request/result models
-* Claude Code integration (CLI non-interactive mode or SDK) in worker
-* workspace-backed builder execution — worker spawns Claude Code scoped to job workspace
-* artifact metadata/results persisted
-* Claude Code auth setup in container environment
+* n8n service in Docker Compose (shared Postgres)
+* N8nClient async wrapper for n8n REST API
+* "n8n" job type for deploying/executing workflows
+* Side hustle automation pipeline (8 steps: research → build n8n workflow → deploy)
 
-## Phase 4 — Iteration + policies
+### Phase 7 — Polish & reliability [COMPLETE]
 
-Goal: support bounded loops safely.
+* Job/workflow cancellation (`POST /jobs/{id}/cancel`, `POST /workflows/{id}/cancel`)
+* Job event log (`job_events` table, `GET /jobs/{id}/logs`)
+* Workspace cleanup (72h retention, periodic cleanup, pinning)
+* Workflow step retry (auto-retry with `max_retries`, manual `POST /workflows/{id}/retry`)
+* Graceful worker shutdown (SIGTERM/SIGINT handling)
 
-Deliverables:
+### Phase 8 — Freelance scanner pipeline [COMPLETE]
 
-* iteration policy
-* stop reasons
-* permission policy model
-* stronger logging and evaluation framework beginnings
+* 7-step pipeline: research niches → evaluate → contrarian → rank → approve → build n8n scanner → deploy
 
-## Phase 5 — Runtime/app integration
+### Trading Engine Integration [COMPLETE]
 
-Goal: connect the app to the runtime cleanly over Tailscale.
-
-Deliverables:
-
-* app launches remote jobs via Tailscale-accessible API
-* app subscribes to SSE stream for live progress updates
-* app shows progress/results
-* app-side duplicate execution paths start getting simplified
-
----
-
-## 19. First Milestone Definition
-
-### Milestone 1
-
-**Arlo can create and complete a startup opportunity research job remotely.**
-
-Success criteria:
-
-* app or curl can create a research job (e.g., "research startup opportunities in the pet tech market")
-* job is persisted in backend DB
-* worker claims and runs it using Claude Code CLI with web search
-* job progress streams in real-time via SSE
-* final structured opportunity report is stored
-* API returns job state/result cleanly
-* works via Tailscale from iPhone to Windows runtime
-
-This is the first serious proof that Arlo Runtime is real.
-
-### Milestone 2
-
-**Arlo can create and complete a builder job remotely.**
-
-Success criteria:
-
-* builder job creates or updates a backend workspace
-* artifacts are written and tracked
-* result is retrievable through job status/result endpoints
+* Separate project: `arlo-trading-engine/`
+* FastAPI + TimescaleDB + Redis + Celery
+* Core backtester with position sizing, slippage, risk limits
+* Walk-forward analysis (anti-overfitting)
+* Parameter sensitivity analysis
+* FRED macro data + NewsAPI sentiment integration
+* MacroAccessor/SentimentAccessor available to strategies
+* Strategy evolution pipeline: research → generate → backtest → evaluate/evolve (loop 50x) → approve
+* 50-test suite (all passing)
 
 ---
 
-## 20. Risks and Mitigations
+## 19. Current Architecture
 
-### Risk: overbuilding infrastructure too early
+```
+Arlo iPhone App (future)
+    ↓ (Tailscale)
+Arlo Runtime API (FastAPI, port 8000)
+    ↓
+Postgres (jobs, workflows, events)
+    ↓
+Worker (polls jobs, executes via Claude Code CLI)
+    ↓
+Claude Code (Sonnet for research, Opus for building)
+    ↓
+n8n (workflow automation, port 5678)
 
-Mitigation:
+Trading Engine API (FastAPI, port 8001)
+    ↓
+TimescaleDB (market data, strategies, backtests)
+    ↓
+Celery Workers (backtests, data ingestion)
+```
 
-* use FastAPI + Postgres + one worker first (no Redis)
-* no Kubernetes or broad distributed complexity
+### Job Types
 
-### Risk: app/runtime boundaries become muddy
+| Type | Executor | Model | Description |
+|------|----------|-------|-------------|
+| research | Claude Code CLI | Sonnet | Web search + structured reports |
+| builder | Claude Code CLI | Opus | Autonomous coding in sandboxed workspace |
+| n8n | n8n REST API | — | Deploy/execute n8n workflows |
+| trading | Trading Engine API | — | Submit strategies, run backtests |
 
-Mitigation:
+### Workflow Templates
 
-* keep app as control surface
-* keep runtime as execution layer
-
-### Risk: provider sprawl / unsafe tool use
-
-Mitigation:
-
-* add explicit permission policy model early
-* deterministic routing owns tool selection
-
-### Risk: builder sandbox drifts into arbitrary file execution
-
-Mitigation:
-
-* controlled workspace root — Claude Code is always launched with cwd set to the job workspace
-* strict path validation
-* Claude Code runs within the workspace boundary; the workspace *is* the sandbox
-* worker enforces timeout and iteration limits externally
-
-### Risk: Claude Code rate limits throttle concurrent builder jobs
-
-Mitigation:
-
-* queue builder jobs and run them sequentially (one at a time) in v1
-* monitor Max plan rate limits and adjust concurrency later
-
-### Risk: jobs become opaque
-
-Mitigation:
-
-* durable status, current step, and logs from the start
+| Template | Steps | Description |
+|----------|-------|-------------|
+| `startup_idea_pipeline` | 6 | Deep research → contrarian → synthesis → approve → build MVP |
+| `side_hustle_pipeline` | 8 | Research → evaluate → build n8n workflow → deploy |
+| `freelance_scanner` | 7 | Research niches → rank → build scanner → deploy to n8n |
+| `strategy_evolution` | 5 | Research → generate → backtest/evolve (loop) → approve |
 
 ---
 
-## 21. Definition of Success for Arlo Runtime v1
+## 20. Remaining Work
 
-Arlo Runtime v1 is successful if:
+### Near-term
 
-* the backend can accept and persist jobs
-* a worker can execute jobs independently of the mobile app
-* job progress and results are durable and inspectable
-* research jobs work end-to-end
-* builder jobs work end-to-end in a controlled workspace
-* the app can later integrate as a clean control surface
-* the system remains bounded, deterministic, and understandable
+* Deploy to always-on Windows machine + Tailscale
+* Connect Arlo iPhone app to runtime API
+* Alpaca paper trading integration for winning strategies
+* Add more FRED/sentiment data sources
+* Competitive intelligence monitor pipeline
 
----
+### Long-term
 
-## 22. Immediate Next Steps
-
-1. Create the basic runtime repo structure
-2. Add FastAPI app skeleton
-3. Add Postgres service in Docker Compose (platform-agnostic, works on Mac + Windows)
-4. Add config/settings module and `.env.example`
-5. Add core job model and DB schema
-6. Add worker service skeleton (polls Postgres directly)
-7. Implement `POST /jobs`, `GET /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/stream` (SSE)
-8. Implement first end-to-end research job: "startup opportunity research" using Claude Code CLI
-9. Run the stack on Mac via Docker Compose
-10. Run the identical stack on the Windows machine via Docker Compose
-11. Set up Tailscale so the iPhone app can reach the runtime
-
----
-
-## 23. Final Note
-
-Arlo Runtime should be treated as the beginning of the real execution platform, not a side helper service.
-
-The phone app is evolving into:
-
-* interface
-* approval layer
-* result viewer
-* local-native assistant surface
-
-The runtime is evolving into:
-
-* execution engine
-* job system
-* builder/research platform
-* future long-running intelligence layer
-
-That is the correct architecture for the Arlo product vision.
+* SEO content pipeline
+* Strategy ensemble/voting (multiple strategies running simultaneously)
+* Real-money trading (after paper trading proves out)
+* Full agent swarm capability
