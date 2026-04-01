@@ -297,10 +297,11 @@ def _save_best_for_workflow(workflow_id: str, metrics: dict, instructions: dict,
 
 QUALIFYING_THRESHOLDS = {
     "sharpe_min": 0.8,
+    "mean_return_min": 0.10,  # must beat 10% annualized (SPY baseline)
     "max_drawdown_max": 0.20,
     "consistency_min": 0.75,
     "min_trades": 30,
-    "worst_fold_return_min": -0.15,  # no fold worse than -15%
+    "worst_fold_return_min": -0.15,
 }
 
 
@@ -328,8 +329,11 @@ def _check_and_save_winner(metrics: dict, instructions: dict, job_id: str, full_
                     worst_fold_ok = False
                     break
 
+    mean_return = metrics.get("mean_total_return", 0)
+
     passes = (
         sharpe >= QUALIFYING_THRESHOLDS["sharpe_min"]
+        and mean_return >= QUALIFYING_THRESHOLDS.get("mean_return_min", 0.10)
         and drawdown <= QUALIFYING_THRESHOLDS["max_drawdown_max"]
         and consistency >= QUALIFYING_THRESHOLDS["consistency_min"]
         and trades >= QUALIFYING_THRESHOLDS["min_trades"]
