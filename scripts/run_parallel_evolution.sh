@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Launch 6 parallel evolution workflows.
-# Start with: docker compose up --build -d --scale worker=4
+# Start with: docker compose up --build -d --scale worker=6
 set -euo pipefail
 
 TOKEN="${ARLO_AUTH_TOKEN:-change-me-to-a-real-secret}"
