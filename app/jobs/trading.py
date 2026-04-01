@@ -242,8 +242,8 @@ async def _run_backtest(
     metrics = result.get("metrics", {})
     preview = _build_preview(metrics, result.get("benchmark_metrics", {}))
 
-    # Auto-save if strategy passes qualifying thresholds
-    _check_and_save_winner(metrics, instructions, str(job.id))
+    # Auto-save if strategy passes qualifying thresholds (including worst-fold check)
+    _check_and_save_winner(metrics, instructions, str(job.id), result)
 
     # Always save best-so-far per workflow (survives credit exhaustion)
     if job.workflow_id:
@@ -260,6 +260,7 @@ async def _run_backtest(
 
 # Track best Sharpe per workflow — only overwritten when a BETTER result is found
 _best_sharpe_per_workflow: dict[str, float] = {}
+_highest_winner_sharpe: float = 0.0
 
 
 def _save_best_for_workflow(workflow_id: str, metrics: dict, instructions: dict, full_result: dict) -> None:
@@ -296,14 +297,15 @@ def _save_best_for_workflow(workflow_id: str, metrics: dict, instructions: dict,
 
 QUALIFYING_THRESHOLDS = {
     "sharpe_min": 0.8,
-    "max_drawdown_max": 0.25,
-    "consistency_min": 0.6,
+    "max_drawdown_max": 0.20,
+    "consistency_min": 0.75,
     "min_trades": 30,
+    "worst_fold_return_min": -0.15,  # no fold worse than -15%
 }
 
 
-def _check_and_save_winner(metrics: dict, instructions: dict, job_id: str) -> None:
-    """Check if backtest metrics pass all thresholds. If yes, save to disk."""
+def _check_and_save_winner(metrics: dict, instructions: dict, job_id: str, full_result: dict = None) -> None:
+    """Check if backtest metrics pass all thresholds including worst-fold. If yes, save to disk."""
     import os
     from datetime import datetime
     from pathlib import Path
@@ -313,15 +315,35 @@ def _check_and_save_winner(metrics: dict, instructions: dict, job_id: str) -> No
     consistency = metrics.get("consistency", 0)
     trades = metrics.get("total_trades_all_folds", metrics.get("total_trades", 0))
 
+    # Check worst fold
+    worst_fold_ok = True
+    if full_result and isinstance(full_result, dict):
+        fold_config = full_result.get("fold_config", {})
+        if isinstance(fold_config, dict):
+            folds = fold_config.get("folds", [])
+            for fold in folds:
+                fold_metrics = fold.get("metrics", {})
+                fold_return = fold_metrics.get("total_return", 0)
+                if fold_return < QUALIFYING_THRESHOLDS.get("worst_fold_return_min", -0.15):
+                    worst_fold_ok = False
+                    break
+
     passes = (
         sharpe >= QUALIFYING_THRESHOLDS["sharpe_min"]
         and drawdown <= QUALIFYING_THRESHOLDS["max_drawdown_max"]
         and consistency >= QUALIFYING_THRESHOLDS["consistency_min"]
         and trades >= QUALIFYING_THRESHOLDS["min_trades"]
+        and worst_fold_ok
     )
 
     if not passes:
         return
+
+    # Only save if this is a new high Sharpe (avoid duplicates)
+    global _highest_winner_sharpe
+    if sharpe <= _highest_winner_sharpe:
+        return
+    _highest_winner_sharpe = sharpe
 
     # Save winning strategy
     save_dir = Path("/workspaces/winning_strategies")
