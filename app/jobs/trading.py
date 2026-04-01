@@ -245,6 +245,10 @@ async def _run_backtest(
     # Auto-save if strategy passes qualifying thresholds
     _check_and_save_winner(metrics, instructions, str(job.id))
 
+    # Always save best-so-far per workflow (survives credit exhaustion)
+    if job.workflow_id:
+        _save_best_for_workflow(str(job.workflow_id), metrics, instructions, result)
+
     await finalize_job(
         session, job.id,
         status=JobStatus.SUCCEEDED,
@@ -252,6 +256,42 @@ async def _run_backtest(
         result_data=json.dumps(result),
     )
     logger.info("Trading job %s completed: backtest %s", job.id, backtest_id)
+
+
+# Track best Sharpe per workflow — only overwritten when a BETTER result is found
+_best_sharpe_per_workflow: dict[str, float] = {}
+
+
+def _save_best_for_workflow(workflow_id: str, metrics: dict, instructions: dict, full_result: dict) -> None:
+    """Save the best strategy for each workflow. Only overwrites when Sharpe improves."""
+    from pathlib import Path
+
+    sharpe = metrics.get("mean_sharpe_ratio", metrics.get("sharpe_ratio", -999))
+    if not isinstance(sharpe, (int, float)) or sharpe <= 0:
+        return  # skip bad results
+
+    prev_best = _best_sharpe_per_workflow.get(workflow_id, 0)
+    if sharpe <= prev_best:
+        return  # not an improvement
+
+    _best_sharpe_per_workflow[workflow_id] = sharpe
+
+    save_dir = Path("/workspaces/best_strategies")
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    filepath = save_dir / f"best_{workflow_id[:8]}.json"
+    save_data = {
+        "workflow_id": workflow_id,
+        "sharpe": sharpe,
+        "metrics": metrics,
+        "strategy_submission": instructions,
+        "backtest_results": full_result,
+    }
+
+    with open(filepath, "w") as f:
+        json.dump(save_data, f, indent=2)
+
+    logger.info("New best for workflow %s: Sharpe %.3f → saved to %s", workflow_id[:8], sharpe, filepath)
 
 
 QUALIFYING_THRESHOLDS = {

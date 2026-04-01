@@ -53,8 +53,30 @@ for i in "${!FAMILIES[@]}"; do
   FAMILY="${FAMILIES[$i]}"
   DESC="${DESCRIPTIONS[$i]}"
 
-  # Load seed from saved file if available
+  # Try to load best strategy from Docker volume first (survives credit exhaustion)
+  # Fall back to local saved file
+  BEST_FILE=""
   if [ "$i" -lt "${#SAVED_FILES[@]}" ]; then
+    # Check if a best_* file exists for this workflow's ID
+    SAVED_WF_ID=$(python3 -c "import json; print(json.load(open('${SAVED_FILES[$i]}'))['workflow_id'][:8])" 2>/dev/null || echo "")
+    if [ -f "best_${SAVED_WF_ID}.json" ]; then
+      BEST_FILE="best_${SAVED_WF_ID}.json"
+    fi
+  fi
+
+  if [ -n "$BEST_FILE" ]; then
+    SEED_FILE="$BEST_FILE"
+    SEED=$(python3 -c "
+import json
+with open('$SEED_FILE') as f:
+    data = json.load(f)
+strat = data.get('strategy_submission', 'none')
+print(json.dumps(strat))
+")
+    SHARPE=$(python3 -c "import json; print(f'{json.load(open(\"$SEED_FILE\")).get(\"sharpe\",0):.3f}')")
+    echo "  [$((i+1))] $DESC — BEST from $SEED_FILE (Sharpe: $SHARPE)"
+
+  elif [ "$i" -lt "${#SAVED_FILES[@]}" ]; then
     SEED_FILE="${SAVED_FILES[$i]}"
     SEED=$(python3 -c "
 import json
