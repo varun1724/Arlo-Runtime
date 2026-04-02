@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Launch 6 parallel evolution workflows.
+# Launch 6 parallel evolution workflows with token-efficient optimization.
+# Uses cached research + local parameter optimizer to minimize Claude credits.
 # Start with: docker compose up --build -d --scale worker=6
 set -euo pipefail
 
@@ -19,8 +20,20 @@ if [ "$EXISTING" != "0" ]; then
   exec "$(dirname "$0")/monitor_evolution.sh"
 fi
 
+# Load cached research (pre-computed, saves ~10K tokens per workflow)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CACHED_RESEARCH_FILE="$SCRIPT_DIR/../workspaces/cached_research.json"
+if [ -f "$CACHED_RESEARCH_FILE" ]; then
+  CACHED_RESEARCH=$(cat "$CACHED_RESEARCH_FILE")
+  echo "Loaded cached research from $CACHED_RESEARCH_FILE"
+else
+  CACHED_RESEARCH='{"strategies": [], "recommendation": "No cached research found — Claude will research from scratch"}'
+  echo "WARNING: No cached research found. Will use Claude for research (higher token cost)."
+fi
+
 echo "============================================"
 echo "  Parallel Strategy Evolution (6 workflows)"
+echo "  TOKEN-EFFICIENT: cached research + local optimizer"
 echo "============================================"
 echo "  Capital: \$$CAPITAL"
 echo "  Instruments: $INSTRUMENTS"
@@ -72,6 +85,8 @@ for i in "${!FAMILIES[@]}"; do
 
   WF_ID=$(python3 -c "
 import json, subprocess
+# Pre-populate strategy_research from cache (skips the expensive research Claude call)
+cached_research = json.dumps($CACHED_RESEARCH)
 ctx = {
     'starting_capital': '$CAPITAL',
     'preferred_instruments': '$INSTRUMENTS',
@@ -79,6 +94,7 @@ ctx = {
     'strategy_family': '$FAMILY',
     'backtest_results': 'none yet',
     'seed_strategy': $THIS_SEED,
+    'strategy_research': cached_research,
 }
 payload = json.dumps({'initial_context': ctx})
 result = subprocess.run(

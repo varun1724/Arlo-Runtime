@@ -784,195 +784,49 @@ FREELANCE_SCANNER_PIPELINE = {
 STRATEGY_EVOLUTION_PIPELINE = {
     "template_id": "strategy_evolution",
     "name": "Trading Strategy Evolution",
-    "description": "Research → Generate → Backtest → Evaluate → Evolve (loop up to 50x) → Approve",
+    "description": "Generate → Optimize params (free) → Claude redesign (only on plateau) → loop",
     "required_context": ["starting_capital"],
-    "optional_context": ["preferred_instruments", "risk_tolerance", "strategy_family", "seed_strategy"],
+    "optional_context": ["preferred_instruments", "risk_tolerance", "strategy_family", "seed_strategy", "strategy_research"],
     "steps": [
         # ──────────────────────────────────────────────────
-        # Step 0: Research strategies
-        # ──────────────────────────────────────────────────
-        {
-            "name": "research_strategies",
-            "job_type": "research",
-            "prompt_template": (
-                "You are a quantitative finance researcher. Research trading strategies that "
-                "could beat buy-and-hold (S&P 500) on a risk-adjusted basis.\n\n"
-                "Starting capital: {starting_capital}\n"
-                "Preferred instruments: {preferred_instruments}\n"
-                "Risk tolerance: {risk_tolerance}\n"
-                "Strategy family preference: {strategy_family}\n\n"
-                "AVAILABLE INSTRUMENTS: SPY, QQQ, IWM, VTI, GLD, TLT, AGG, EFA\n"
-                "(stocks, bonds, gold, international — multi-asset rotation is encouraged)\n\n"
-                "RESEARCH REQUIREMENTS:\n"
-                "1. Use web search to find PROVEN strategies with academic or empirical support.\n"
-                "2. Focus on strategies viable at small scale ($1000-$5000).\n"
-                "3. PRIORITIZE multi-asset rotation strategies. Proven approaches:\n"
-                "   - Keller's VAA (Vigilant Asset Allocation) — breadth momentum, Sharpe 1.0-1.4\n"
-                "   - Antonacci's Dual Momentum (GEM) — SPY vs EFA vs AGG, Sharpe 0.85-1.0\n"
-                "   - Cross-asset momentum ranking + trend filter + vol targeting, Sharpe 0.95-1.25\n"
-                "   - Risk parity with vol targeting, Sharpe 0.80-1.05\n"
-                "   - Regime-based rotation using VIX + yield curve, Sharpe 0.85-1.05\n"
-                "   - Stacked signal ensemble (multiple weak signals combined), Sharpe 0.95-1.30\n"
-                "4. Also search for ADVANCED approaches:\n"
-                "   - Cross-asset lead-lag (credit spreads predict equity drops)\n"
-                "   - Carry trade signals across countries (affects EFA vs SPY)\n"
-                "   - Dispersion/correlation regime detection\n"
-                "   - Hierarchical Risk Parity (Lopez de Prado 2016)\n"
-                "   - Black-Litterman allocation with momentum views\n"
-                "   - Fractal market indicators (Hurst exponent)\n"
-                "   - Options-implied vol term structure signals\n"
-                "   - Intermarket divergence (when gold and bonds disagree)\n"
-                "   - Tax-loss harvesting calendar effects (Dec selling, Jan buying)\n"
-                "   - Political/Fed meeting cycle effects on volatility\n"
-                "5. For each strategy, find:\n"
-                "   - Academic papers or empirical evidence\n"
-                "   - Historical Sharpe ratios and returns\n"
-                "   - What market conditions it works/fails in\n"
-                "   - Implementation complexity\n"
-                "5. Identify 5-8 candidate strategies.\n\n"
-                "OUTPUT: Respond with ONLY valid JSON:\n"
-                '{{\n'
-                '  "strategies": [\n'
-                '    {{\n'
-                '      "name": "string",\n'
-                '      "description": "string",\n'
-                '      "evidence": ["string — academic/empirical sources"],\n'
-                '      "historical_sharpe": "string",\n'
-                '      "market_conditions": "string — when it works/fails",\n'
-                '      "instruments": ["string — what to trade"],\n'
-                '      "timeframe": "string — daily, weekly, monthly",\n'
-                '      "complexity": "low | medium | high"\n'
-                '    }}\n'
-                '  ],\n'
-                '  "recommendation": "string — which strategy to try first and why"\n'
-                '}}'
-            ),
-            "output_key": "strategy_research",
-            "timeout_override": 1800,
-        },
-        # ──────────────────────────────────────────────────
-        # Step 1: Generate strategy code
+        # Step 0: Generate strategy code (Claude call — ONCE per architecture)
+        # Research is pre-cached in workflow context (strategy_research).
+        # Claude reads /workspaces/strategy_guide.md for API docs and ideas.
         # ──────────────────────────────────────────────────
         {
             "name": "generate_strategy",
             "job_type": "research",
             "prompt_template": (
-                "You are a quant developer. Based on this research, write a trading strategy "
-                "as Python code.\n\n"
+                "You are a quant developer. Read /workspaces/strategy_guide.md for the full "
+                "multi-asset API docs, signal values, available instruments, macro data accessors, "
+                "proven strategy families, and creative edge signals.\n\n"
                 "RESEARCH:\n{strategy_research}\n\n"
                 "PREVIOUS BACKTEST RESULTS (if any):\n{backtest_results}\n\n"
-                "SEED STRATEGY (if provided, use this as a starting point and improve it):\n"
-                "{seed_strategy}\n\n"
-                "Write a MULTI-ASSET strategy class that inherits from BaseStrategy.\n\n"
-                "MULTI-ASSET API (you MUST use this):\n"
-                "  class MyStrategy(BaseStrategy):\n"
-                "      name = 'My Strategy'\n"
-                "      multi_asset = True\n\n"
-                "      def generate_signals(self, data: dict) -> dict:\n"
-                "          # data = {{'SPY': ohlcv_df, 'TLT': ohlcv_df, 'GLD': ohlcv_df, ...}}\n"
-                "          # Each df has columns: open, high, low, close, volume\n"
-                "          # Return: {{'SPY': signals_df, 'TLT': signals_df, ...}}\n"
-                "          # Each signals_df has 'signal' column and 'size_pct' column\n"
-                "          # Signal values: 1=buy new, -1=sell, 0=hold, 2=rebalance (sell then buy same asset)\n"
-                "          # size_pct across all assets should sum to <= 0.95 at any bar\n"
-                "          pass\n\n"
-                "SIGNAL VALUES:\n"
-                "  0 = hold (do nothing)\n"
-                "  1 = buy (new entry)\n"
-                " -1 = sell (exit position)\n"
-                "  2 = rebalance (sell current position then re-buy at new size_pct)\n"
-                "      USE signal=2 when the SAME asset stays the winner but needs resizing.\n"
-                "      Without signal=2, setting -1 then 1 on the same symbol overwrites the sell!\n\n"
-                "RULES:\n"
-                "1. Set multi_asset = True on the class\n"
-                "2. Use self.params dict for all tunable parameters\n"
-                "3. Only use data available at each bar (no look-ahead bias)\n"
-                "4. Import only: pandas as pd, numpy as np, from app.strategy.base import BaseStrategy\n"
-                "5. Rebalance monthly (every ~21 bars).\n"
-                "6. MINIMIZE SLIPPAGE: Only trade when something changes.\n"
-                "   - New asset: signal=1. Exiting asset: signal=-1.\n"
-                "   - Same asset, weight changed >5%: signal=2 (rebalance/resize).\n"
-                "   - Same asset, same weight: signal=0 (hold, no trade).\n"
-                "   Each round-trip costs ~0.2% slippage. Unnecessary rebalancing kills returns.\n\n"
-                "AVAILABLE INSTRUMENTS: SPY, QQQ, IWM, VTI, GLD, TLT, AGG, EFA\n"
-                "  Stocks: SPY (US large), QQQ (tech), IWM (small-cap), VTI (total market), EFA (international)\n"
-                "  Bonds: TLT (long-term), AGG (aggregate)\n"
-                "  Gold: GLD\n\n"
-                "AVAILABLE MACRO DATA:\n"
-                "- self.macro.get('VIXCLS', date) → VIX fear gauge\n"
-                "- self.macro.get('T10Y2Y', date) → yield curve (negative = recession signal)\n"
-                "- self.macro.get('FEDFUNDS', date) → Fed funds rate\n"
-                "- self.macro.get('BAMLH0A0HYM2', date) → high yield spread (credit stress)\n"
-                "- self.sentiment.get('SPY', date) → news sentiment (-1 to +1)\n\n"
-                "CRITICAL INSIGHT FROM BACKTESTING:\n"
-                "The biggest Sharpe killer is 2022-type events where stocks AND bonds fall together\n"
-                "(rate hiking cycles). Momentum strategies fail when all assets correlate downward.\n"
-                "SOLUTION: Add a rate-hike filter using FEDFUNDS. If self.macro.get('FEDFUNDS', date)\n"
-                "is rising rapidly (check rate 6 months ago vs now), reduce equity exposure and hold\n"
-                "GLD (gold) which is the only asset that holds up during rate-hike selloffs.\n"
-                "Also: when self.macro.get('BAMLH0A0HYM2', date) > 5 (credit stress), go fully\n"
-                "defensive regardless of momentum signals.\n\n"
-                "PROVEN STRATEGIES TO DRAW FROM (Sharpe 0.85-1.4 historically):\n"
-                "1. DUAL MOMENTUM (Antonacci): Hold SPY if 12mo return > EFA and > risk-free, else EFA, else AGG\n"
-                "2. VIGILANT AA (Keller): Score momentum = 12*(p/p1)+4*(p/p3)+2*(p/p6)+(p/p12). Count positive aggressive assets (breadth). Allocate aggressive/defensive by breadth ratio.\n"
-                "3. CROSS-ASSET MOMENTUM: Rank all 8 ETFs by 12-1 momentum. Hold top 3 above 200-day SMA. Risk-parity weight.\n"
-                "4. VOL TARGETING (Moreira & Muir 2017): Scale positions by inverse of realized volatility. Target 10% annual vol.\n"
-                "5. REGIME ROTATION: Use VIX + yield curve to define 4 regimes. Each regime has preset allocation to stocks/bonds/gold.\n"
-                "6. STACKED ENSEMBLE: Combine momentum rank + trend filter + VIX regime + yield curve signal. Weight by rolling Sharpe.\n\n"
-                "CREATIVE EDGE SIGNALS (combine with above for alpha):\n"
-                "- CREDIT LEAD-LAG: HY spread (BAMLH0A0HYM2) widens 2-4 weeks before equity drops. If HY spread rising fast, reduce equities early.\n"
-                "- VIX MEAN REVERSION: Buy equities aggressively when VIX > 35 (panic = opportunity). Reduce when VIX < 12 (complacency).\n"
-                "- YIELD CURVE VELOCITY: Rate of change of T10Y2Y matters more than level. Rapidly flattening = more bearish than stable inversion.\n"
-                "- SENTIMENT DIVERGENCE: When price momentum is positive but news sentiment turning negative, momentum is about to fail.\n"
-                "- CORRELATION REGIME: When stock-bond correlation goes positive (both falling), switch to gold-only.\n"
-                "- CALENDAR EFFECTS: Turn-of-month (last+first 3 days) captures ~70% of monthly equity returns.\n\n"
-                "UNCONVENTIONAL / OUT-OF-THE-BOX IDEAS (try these — they're untested and could be breakthroughs):\n"
-                "- ANTI-CONSENSUS: When ALL momentum signals agree (everything bullish), that's peak danger.\n"
-                "  REDUCE exposure when signals unanimously agree. INCREASE when they disagree (uncertainty = opportunity).\n"
-                "- PANIC BUYING: VIX > 35 historically predicts +15-20% equity returns over next 6 months.\n"
-                "  INCREASE equity exposure during panics, don't decrease it. Buy fear aggressively.\n"
-                "- GOLD-BOND DIVERGENCE: When GLD up but TLT down (or vice versa), one is pricing inflation\n"
-                "  correctly. The correct one predicts next 3-6 months of equities. This signal is nearly untested.\n"
-                "- REGIME PERSISTENCE: Markets stay in regimes longer than expected. Instead of reacting to\n"
-                "  regime changes, bet on CONTINUATION. Only switch after 3+ confirmation signals fire together.\n"
-                "- CONVEX POSITION SIZING: Don't scale linearly. Use small positions for medium-confidence signals,\n"
-                "  large positions ONLY for extreme-confidence signals. Concentrate capital on highest-conviction bets.\n"
-                "- DRAWDOWN RECOVERY SIGNAL: After a 10%+ drawdown in any asset, the one that recovers fastest\n"
-                "  becomes the next leader. Track 'relative strength off the bottom' — different from standard momentum.\n"
-                "- CALENDAR x MOMENTUM: Momentum works better at turn-of-month and post-earnings windows.\n"
-                "  Only execute momentum trades during these favorable windows.\n"
-                "- CONCENTRATED CONVICTION: Instead of holding 3 assets at 33% each, hold the SINGLE best asset\n"
-                "  at 95%. QQQ alone returned 1500%+ over 2005-2024. A strategy that held QQQ during normal times\n"
-                "  and switched to TLT/GLD during crashes would have massively beaten SPY.\n"
-                "- RATE VELOCITY REGIME: The speed of FEDFUNDS changes matters more than the level.\n"
-                "  Fast hikes (2022) kill everything. Fast cuts (2020) boost everything. Measure 6-month change rate.\n\n"
-                "ADVANCED SIGNALS (these use data we have):\n"
-                "- OPTIONS-IMPLIED: VIX term structure slope predicts equity direction 2-3 days ahead.\n"
-                "  When VIX is high but falling = market bottoming. When VIX is low but rising = danger.\n"
-                "  Compute: VIX rate of change over 5 days. Negative RoC from high = aggressive buy signal.\n"
-                "- CREDIT-EQUITY LEAD: HY spread (BAMLH0A0HYM2) leads equities by 2-4 weeks.\n"
-                "  Compute: 20-day rate of change of HY spread. Rising > 0.5 = reduce equities 2 weeks early.\n"
-                "- FED VELOCITY REGIME: Speed of FEDFUNDS change matters more than level.\n"
-                "  Compute: FEDFUNDS now vs 6 months ago. If rising > 1% in 6 months = aggressive rate hiking\n"
-                "  regime → go to GLD (only asset that survives rate hikes). This would have avoided 2022.\n\n"
-                "THE GOAL: Beat SPY's 10.3% annualized return AND achieve Sharpe > 0.8.\n"
-                "This requires being AGGRESSIVE during bull markets (not hiding in bonds) while having\n"
-                "a reliable crash detector that exits BEFORE the drawdown, not during it.\n"
-                "The best strategy is probably: concentrated equity (QQQ or best momentum asset) with\n"
-                "a multi-signal crash detector (VIX RoC + credit spread velocity + Fed rate velocity).\n"
-                "PANIC = OPPORTUNITY: When VIX > 35, BUY MORE, don't sell. This is the single biggest\n"
-                "alpha source — everyone else is selling during panics while you should be buying.\n\n"
+                "SEED STRATEGY (if provided, improve it):\n{seed_strategy}\n\n"
+                "STRATEGY FAMILY: {strategy_family}\n"
+                "CAPITAL: {starting_capital}\n\n"
+                "Write a multi-asset strategy class (BaseStrategy, multi_asset=True).\n\n"
+                "CRITICAL: Include a 'parameter_ranges' field in your output. This defines which "
+                "parameters can be tuned and their candidate values. A local optimizer will "
+                "automatically test hundreds of parameter combinations WITHOUT calling you again. "
+                "Define ranges for EVERY tunable parameter.\n\n"
+                "Example parameter_ranges:\n"
+                '{{\n'
+                '  "lookback": [21, 42, 63, 126, 252],\n'
+                '  "sma_period": [50, 100, 150, 200],\n'
+                '  "vix_threshold": [15, 20, 25, 30, 35],\n'
+                '  "equity_pct_risk_on": [0.7, 0.8, 0.9, 0.95],\n'
+                '  "rebalance_days": [15, 21, 42]\n'
+                '}}\n\n'
                 "OUTPUT: Respond with ONLY valid JSON:\n"
                 '{{\n'
                 '  "action": "submit_and_backtest",\n'
                 '  "strategy": {{\n'
-                '    "name": "string — strategy name",\n'
+                '    "name": "string",\n'
                 '    "strategy_code": "string — full Python code",\n'
                 '    "parameters": {{}},\n'
-                '    "risk_constraints": {{\n'
-                '      "max_drawdown_pct": 0.25,\n'
-                '      "max_position_size_pct": 0.25\n'
-                '    }},\n'
+                '    "parameter_ranges": {{}},\n'
+                '    "risk_constraints": {{"max_drawdown_pct": 0.25, "max_position_size_pct": 0.25}},\n'
                 '    "symbols": ["SPY", "QQQ", "IWM", "VTI", "GLD", "TLT", "AGG", "EFA"],\n'
                 '    "timeframe": "1D",\n'
                 '    "description": "string"\n'
@@ -988,120 +842,73 @@ STRATEGY_EVOLUTION_PIPELINE = {
             "timeout_override": 900,
         },
         # ──────────────────────────────────────────────────
-        # Step 2: Submit and backtest
+        # Step 1: Local parameter optimization (NO Claude — runs internally)
+        # Generates parameter variants, backtests all via trading engine API,
+        # picks the best. Runs up to 30 rounds of 8 variants each (240 backtests).
+        # Returns when plateau detected or max rounds hit.
         # ──────────────────────────────────────────────────
         {
-            "name": "submit_and_backtest",
-            "job_type": "trading",
+            "name": "local_optimize",
+            "job_type": "optimize",
             "prompt_template": "{strategy_submission}",
-            "output_key": "backtest_results",
+            "output_key": "optimizer_results",
             "condition": {"field": "strategy_submission", "operator": "not_empty"},
         },
         # ──────────────────────────────────────────────────
-        # Step 3: Evaluate and evolve
+        # Step 2: Evaluate and redesign (Claude call — ONLY when optimizer plateaus)
+        # Sees all optimization results, redesigns strategy architecture.
+        # Loops back to Step 1 for more optimization.
         # ──────────────────────────────────────────────────
         {
-            "name": "evaluate_and_evolve",
+            "name": "evaluate_and_redesign",
             "job_type": "research",
             "prompt_template": (
-                "You are a quant evaluating backtest results. Analyze these results and "
-                "either declare success or evolve the strategy.\n\n"
-                "BACKTEST RESULTS:\n{backtest_results}\n\n"
-                "CURRENT STRATEGY:\n{strategy_submission}\n\n"
-                "QUALIFYING THRESHOLDS (ALL must pass):\n"
-                "- Mean annual return > 12% (SPY does 10.3%. You MUST beat this.)\n"
-                "- Mean Sharpe ratio > 0.8\n"
-                "- Mean max drawdown < 20%\n"
-                "- Walk-forward consistency > 75% of folds profitable\n"
-                "- At least 30 total trades\n"
-                "- NO fold with return below -15%\n\n"
-                "RETURN IS THE PRIORITY. A strategy with 15% return and 18% DD is BETTER than\n"
-                "one with 8% return and 10% DD. Low-return strategies are useless even if safe.\n"
-                "QQQ buy-and-hold returns 15% annualized. SPY returns 10.3%. Your strategy must\n"
-                "beat SPY on return — not just Sharpe.\n\n"
-                "KEY INSIGHT: Strategies that spend >30% of time in bonds/gold/cash will NEVER\n"
-                "beat SPY on return. Stay 70%+ in equities during non-crisis periods.\n"
-                "Only go defensive when crash signals are SCREAMING (VIX>30 + credit widening + trend break).\n\n"
-                "MULTI-ASSET API (your strategy MUST use this):\n"
-                "  class MyStrategy(BaseStrategy):\n"
-                "      multi_asset = True\n"
-                "      def generate_signals(self, data: dict) -> dict:\n"
-                "          # data = {{'SPY': df, 'TLT': df, ...}} each with open/high/low/close/volume\n"
-                "          # Return {{'SPY': signals_df, 'TLT': signals_df, ...}}\n"
-                "          # signals_df has 'signal' (1/-1/0) and 'size_pct' columns\n"
-                "          # Sum of size_pct across all assets <= 0.95 at any bar\n\n"
-                "AVAILABLE INSTRUMENTS: SPY, QQQ, IWM, VTI, GLD, TLT, AGG, EFA\n"
-                "MACRO: self.macro.get('VIXCLS'|'T10Y2Y'|'FEDFUNDS'|'BAMLH0A0HYM2', date)\n"
-                "SENTIMENT: self.sentiment.get('SPY', date)\n\n"
-                "PROVEN APPROACHES (combine for best results):\n"
-                "1. DUAL MOMENTUM: SPY vs EFA, loser goes to AGG. Sharpe ~0.85-1.0\n"
-                "2. VAA BREADTH: Score = 12*(p/p1)+4*(p/p3)+2*(p/p6)+(p/p12). Count positive aggressive assets. Allocate by breadth ratio. Sharpe ~1.0-1.4\n"
-                "3. CROSS-ASSET MOMENTUM: Rank all ETFs by 12-1 momentum, hold top 3 above 200d SMA, risk-parity weight. Sharpe ~0.95-1.2\n"
-                "4. VOL TARGETING: Scale all positions by target_vol/realized_vol. Adds ~0.10-0.25 Sharpe.\n"
-                "5. REGIME ROTATION: VIX<20 + yield>0 = risk-on (stocks). VIX>20 or yield<0 = defensive (bonds/gold).\n"
-                "6. STACKED ENSEMBLE: Combine momentum + trend + VIX + yield curve signals, weighted by rolling Sharpe.\n\n"
-                "CREATIVE EDGE SIGNALS:\n"
-                "- CREDIT LEAD-LAG: HY spread widens before equity drops. If BAMLH0A0HYM2 rising fast, reduce equities.\n"
-                "- PANIC BUYING: VIX > 35 = buy MORE equities aggressively (historically +15-20% over next 6mo).\n"
-                "- ANTI-CONSENSUS: When ALL signals agree bullish = peak danger. Reduce exposure on unanimity.\n"
-                "- CONCENTRATED CONVICTION: Hold SINGLE best asset at 95% instead of diversifying across 3.\n"
-                "  QQQ returned 1500%+ over 2005-2024. Holding QQQ + crash detector would have crushed SPY.\n"
-                "- GOLD-BOND DIVERGENCE: GLD up + TLT down = inflation signal. One predicts next 3-6mo of equities.\n"
-                "- DRAWDOWN RECOVERY: After 10%+ drop, fastest recovering asset becomes next leader.\n"
-                "- RATE VELOCITY: Speed of FEDFUNDS changes > level. Fast hikes (2022) kill all. Fast cuts boost all.\n"
-                "- CONVEX SIZING: Small positions for medium signals, big ONLY for extreme conviction.\n\n"
-                "GOAL: Beat SPY's 10.3% annualized AND Sharpe > 0.8. Be AGGRESSIVE in bull markets.\n\n"
-                "COMMON BUGS TO AVOID:\n"
-                "- Always set multi_asset = True on the class\n"
-                "- Return dict of DataFrames, not a single DataFrame\n"
-                "- Use data[symbol].iloc[i]['close'] not data['close']\n"
-                "- Check 'if symbol in data' before accessing\n"
-                "- Rebalance monthly (every ~21 bars), not every bar\n"
-                "- Use signal=2 to rebalance (sell+buy) same asset. Do NOT use -1 then 1 on same symbol — it overwrites!\n"
-                "- Initialize signals for ALL symbols in data, not just the ones you trade\n\n"
-                "MUTATION RULE:\n"
-                "Every 10 iterations, SWITCH to a fundamentally different strategy family.\n"
-                "If Sharpe hasn't improved >0.01 for 5 iterations, switch immediately.\n"
-                "Try combining approaches: e.g., VAA breadth + vol targeting + macro overlay.\n\n"
-                "OVERFITTING WARNING: Walk-forward mean Sharpe can be misleading!\n"
-                "A strategy with mean Sharpe 0.8 but ONE fold at -33% return is OVERFIT.\n"
-                "Look at the WORST fold in the backtest results. If any fold has:\n"
-                "  - Return below -15%: the crash detector is broken for that period\n"
-                "  - Sharpe below -1.0: the strategy has a structural weakness\n"
-                "The strategy MUST work in ALL periods including 2008 and 2022 crashes.\n"
-                "If the worst fold is bad, fix the crash detection, don't just tune parameters.\n\n"
-                "ANALYSIS STEPS:\n"
-                "1. NEVER output the strategy unchanged. ALWAYS try to improve it.\n"
-                "   Target: mean Sharpe > 1.0, NO fold below -10% return, DD < 15%.\n"
-                "2. Check the WORST fold first. If it lost > 10%, focus on fixing that.\n"
-                "   Common fixes: faster crash exit (100-day SMA instead of 200-day),\n"
-                "   multiple crash signals (VIX + credit spread + trend break = exit immediately).\n"
-                "3. If mean return < 10%, the strategy is TOO DEFENSIVE. Increase equity exposure.\n"
-                "   Hold QQQ/SPY at 90%+ allocation during bull markets. Only reduce to 50% or below\n"
-                "   when ALL crash signals fire together (VIX>30 AND credit widening AND below SMA).\n"
-                "4. If Sharpe is -999, the strategy CODE had a bug. Fix the code.\n"
-                "5. Analyze what's working and what's not. Modify to improve.\n"
-                "6. Output the MODIFIED strategy for the next backtest.\n\n"
-                "OUTPUT: Respond with ONLY valid JSON (same format as strategy_submission):\n"
+                "You are a quant evaluator. Read /workspaces/strategy_guide.md for reference.\n\n"
+                "The LOCAL OPTIMIZER tested many parameter combinations and PLATEAUED.\n"
+                "Parameter tuning alone cannot improve further — you must REDESIGN the strategy architecture.\n\n"
+                "OPTIMIZER RESULTS:\n{optimizer_results}\n\n"
+                "CURRENT BEST STRATEGY:\n{strategy_submission}\n\n"
+                "THRESHOLDS: return>12%, Sharpe>0.8, DD<20%, consistency>75%, 30+ trades, no fold<-15%.\n\n"
+                "ANALYSIS:\n"
+                "1. Look at the parameter sensitivity — which params matter most?\n"
+                "2. Check worst fold — if below -15%, the crash detector needs structural change.\n"
+                "3. If return < 10%, increase equity exposure fundamentally (not just param tuning).\n"
+                "4. If Sharpe is -999, fix the code bug.\n\n"
+                "REDESIGN the strategy architecture. Change the LOGIC, not just numbers. Examples:\n"
+                "- Switch strategy family entirely (momentum → regime → ensemble)\n"
+                "- Add/remove signals (add credit lead-lag, VIX mean reversion, etc.)\n"
+                "- Change position sizing approach (equal weight → risk parity → concentrated)\n"
+                "- Change crash detection method (SMA → multi-signal → VIX-based)\n\n"
+                "CRITICAL: Include 'parameter_ranges' for all tunable params in the new design.\n\n"
+                "OUTPUT: Respond with ONLY valid JSON:\n"
                 '{{\n'
                 '  "action": "submit_and_backtest",\n'
-                '  "strategy": {{ ... modified strategy ... }},\n'
+                '  "strategy": {{\n'
+                '    "name": "string",\n'
+                '    "strategy_code": "string — full Python code",\n'
+                '    "parameters": {{}},\n'
+                '    "parameter_ranges": {{}},\n'
+                '    "risk_constraints": {{"max_drawdown_pct": 0.25, "max_position_size_pct": 0.25}},\n'
+                '    "symbols": ["SPY", "QQQ", "IWM", "VTI", "GLD", "TLT", "AGG", "EFA"],\n'
+                '    "timeframe": "1D",\n'
+                '    "description": "string"\n'
+                '  }},\n'
                 '  "start_date": "2005-01-01",\n'
                 '  "end_date": "2024-12-31",\n'
                 '  "initial_capital": {starting_capital},\n'
                 '  "test_type": "walk_forward",\n'
-                '  "evolution_notes": "string — what was changed and why"\n'
+                '  "evolution_notes": "string — what architectural changes were made and why"\n'
                 '}}'
             ),
             "output_key": "strategy_submission",
-            "condition": {"field": "backtest_results", "operator": "not_empty"},
+            "condition": {"field": "optimizer_results", "operator": "not_empty"},
             "timeout_override": 900,
-            "loop_to": 2,
-            "max_loop_count": 400,
+            "loop_to": 1,
+            "max_loop_count": 50,
         },
-        # No approval gate — winning strategies are auto-saved to
-        # /workspaces/winning_strategies/ by the trading executor.
-        # The loop runs the full 400 iterations to find as many winners as possible.
+        # Winning strategies are auto-saved by the optimizer to
+        # /workspaces/winning_strategies/ when they pass all thresholds.
+        # Each Claude redesign cycle triggers ~240 free backtests via the optimizer.
     ],
 }
 

@@ -10,6 +10,15 @@ CAPITAL="${1:-1000}"
 INSTRUMENTS="${2:-SPY,QQQ,IWM,VTI,GLD,TLT,AGG,EFA}"
 PREFIX="${3:-saved_evolution}"
 
+# Load cached research
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CACHED_RESEARCH_FILE="$SCRIPT_DIR/../workspaces/cached_research.json"
+if [ -f "$CACHED_RESEARCH_FILE" ]; then
+  CACHED_RESEARCH=$(cat "$CACHED_RESEARCH_FILE")
+else
+  CACHED_RESEARCH='{"strategies": [], "recommendation": "No cached research"}'
+fi
+
 # Check for existing running workflows
 EXISTING=$(curl -s "$BASE/workflows" -H "Authorization: Bearer $TOKEN" 2>/dev/null \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print(len([w for w in d.get('workflows',[]) if w['status']=='running']))" 2>/dev/null || echo "0")
@@ -99,6 +108,7 @@ print(f'{data.get(\"metrics_summary\",{}).get(\"sharpe\",0):.3f}')
 
   WF_ID=$(python3 -c "
 import json, subprocess
+cached_research = json.dumps($CACHED_RESEARCH)
 ctx = {
     'starting_capital': '$CAPITAL',
     'preferred_instruments': '$INSTRUMENTS',
@@ -106,6 +116,7 @@ ctx = {
     'strategy_family': '$FAMILY',
     'backtest_results': 'none yet',
     'seed_strategy': $SEED,
+    'strategy_research': cached_research,
 }
 payload = json.dumps({'initial_context': ctx})
 result = subprocess.run(

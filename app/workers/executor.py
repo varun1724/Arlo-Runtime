@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import JobRow
 from app.jobs.builder import execute_builder_job
+from app.jobs.local_optimizer import execute_optimize_job
 from app.jobs.n8n import execute_n8n_job
 from app.jobs.research import execute_research_job
 from app.jobs.trading import execute_trading_job
@@ -24,6 +25,8 @@ async def execute_job(session: AsyncSession, job: JobRow) -> None:
         await execute_n8n_job(session, job)
     elif job.job_type == "trading":
         await execute_trading_job(session, job)
+    elif job.job_type == "optimize":
+        await execute_optimize_job(session, job)
     else:
         logger.error("Unknown job type: %s", job.job_type)
         await finalize_job(

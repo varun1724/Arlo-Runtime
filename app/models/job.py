@@ -12,6 +12,7 @@ class JobType(StrEnum):
     BUILDER = "builder"
     N8N = "n8n"
     TRADING = "trading"
+    OPTIMIZE = "optimize"
 
 
 class JobStatus(StrEnum):
