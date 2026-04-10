@@ -39,6 +39,9 @@ async def test_download_workspace_with_valid_token_streams_tar(unauthed_client):
         (workspace / "BUILD_DECISIONS.md").write_text("We chose Python because...\n")
         (workspace / "main.py").write_text("print('hello')\n")
 
+        # Commit the workflow FIRST so the FK exists when we insert the
+        # job. SQLAlchemy doesn't always order multi-table inserts by FK
+        # dependency unless an ORM relationship() is declared.
         async with async_session() as session:
             wf = WorkflowRow(
                 id=wf_id,
@@ -50,6 +53,9 @@ async def test_download_workspace_with_valid_token_streams_tar(unauthed_client):
                 completed_at=datetime.now(timezone.utc),
             )
             session.add(wf)
+            await session.commit()
+
+        async with async_session() as session:
             job = JobRow(
                 id=job_id,
                 job_type="builder",

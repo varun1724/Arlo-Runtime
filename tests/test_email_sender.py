@@ -95,8 +95,14 @@ async def test_send_email_uses_starttls_and_config():
 @pytest.mark.asyncio
 async def test_send_email_passes_none_for_blank_credentials():
     """When smtp_username/smtp_password are blank (unset), we pass None
-    so aiosmtplib doesn't attempt authentication."""
-    with patch("app.services.email_sender.aiosmtplib.send", new=AsyncMock()) as mock_send:
+    so aiosmtplib doesn't attempt authentication.
+
+    Patches the live settings so the test stays hermetic even when the
+    deployment env has real credentials in .env.
+    """
+    with patch("app.services.email_sender.aiosmtplib.send", new=AsyncMock()) as mock_send, \
+         patch("app.services.email_sender.settings.smtp_username", ""), \
+         patch("app.services.email_sender.settings.smtp_password", ""):
         await send_email(
             to="me@example.com",
             subject="s",
@@ -104,7 +110,6 @@ async def test_send_email_passes_none_for_blank_credentials():
             text_fallback="x",
         )
     _, kwargs = mock_send.call_args
-    # Default config has blank credentials
     assert kwargs.get("username") is None
     assert kwargs.get("password") is None
 
