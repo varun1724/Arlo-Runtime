@@ -14,21 +14,40 @@ STARTUP_IDEA_PIPELINE = {
             "name": "landscape_scan",
             "job_type": "research",
             "prompt_template": (
-                "You are a senior startup research analyst. Conduct a broad landscape scan of the "
-                "{domain} market.\n\n"
+                "You are a senior startup research analyst hunting for NON-OBVIOUS opportunities in "
+                "the {domain} market. Your goal is to surface ideas that 90% of researchers would miss.\n\n"
                 "Focus areas: {focus_areas}\n"
                 "Constraints: {constraints}\n\n"
                 "INSTRUCTIONS:\n"
-                "1. Use web search extensively. Search for:\n"
-                "   - Industry reports and market sizing (Gartner, CB Insights, Grand View Research, etc.)\n"
-                "   - Recent funding announcements in this space (last 12-18 months)\n"
-                "   - Emerging trends and technology shifts\n"
-                "   - Regulatory or macro factors affecting this market\n\n"
-                "2. Identify 10-15 distinct opportunity areas. For each, provide:\n"
+                "1. Use web search across DIVERSE source types. Don't just read industry reports — "
+                "the best opportunities hide where analysts don't look. Search:\n"
+                "   a) Mainstream sources (for market sizing only):\n"
+                "      - Gartner, CB Insights, Grand View Research\n"
+                "      - Recent funding announcements (Crunchbase, TechCrunch, last 12-18 months)\n"
+                "   b) Contrarian sources (for non-obvious opportunities):\n"
+                "      - Reddit niche subreddits where target users complain about workflow pain\n"
+                "      - Hacker News 'Ask HN' and 'Show HN' threads\n"
+                "      - GitHub trending repos and issue trackers showing unmet needs\n"
+                "      - Product Hunt launches in the last 90 days\n"
+                "      - YC Request for Startups, indie hacker forums, micro-SaaS communities\n"
+                "      - Job postings revealing hidden infrastructure problems companies are hiring for\n\n"
+                "2. Identify 10-15 distinct opportunity areas. Bias toward non-obvious. For each, "
+                "explicitly tag the TIMING SIGNAL TYPE — choose ONE of these categories:\n"
+                "   - REGULATORY_SHIFT: new law/standard creates a forced buying moment\n"
+                "   - TECHNOLOGY_UNLOCK: a capability that wasn't possible 24 months ago\n"
+                "   - BEHAVIORAL_CHANGE: user habits shifted (remote work, AI adoption, etc.)\n"
+                "   - COST_COLLAPSE: something previously expensive became cheap\n"
+                "   - DISTRIBUTION_UNLOCK: new channel that reaches customers cheaply\n"
+                "   - INCUMBENT_FAILURE: a big player got worse, abandoned a segment, or got sued\n"
+                "   If you can't tag a clear timing signal, the opportunity is probably stale — drop it.\n\n"
+                "3. Provide for EACH opportunity:\n"
                 "   - A clear name and 2-sentence description\n"
-                "   - Why this opportunity exists NOW (timing signal)\n"
-                "   - At least one named company or data point as evidence\n\n"
-                "3. Map the overall market landscape:\n"
+                "   - timing_signal_type (one of the 6 categories above)\n"
+                "   - timing_signal: the specific evidence (article, regulation, product launch, etc.)\n"
+                "   - At least one named company or data point as evidence\n"
+                "   - non_obviousness_check: would 90% of analysts list this opportunity? (yes/no)\n"
+                "     If yes, you must justify why it's still worth listing OR replace it.\n\n"
+                "4. Map the overall market landscape:\n"
                 "   - Total market size with source\n"
                 "   - Growth rate with source\n"
                 "   - Key players and their positions\n"
@@ -37,16 +56,27 @@ STARTUP_IDEA_PIPELINE = {
                 "- Every market size claim must cite a source by name\n"
                 "- Every opportunity must reference at least one real company or data point\n"
                 "- Do NOT fabricate data. If you can't find reliable data, say so.\n"
-                "- Use web search for EVERY major claim — do not rely on training data alone\n\n"
+                "- Use web search for EVERY major claim — do not rely on training data alone\n"
+                "- At least 5 of the 10-15 opportunities should be NON-OBVIOUS (non_obviousness_check = no)\n\n"
                 "OUTPUT: Respond with ONLY valid JSON:\n"
                 '{{\n'
                 '  "market_size": "string — total market size with source",\n'
                 '  "growth_rate": "string — CAGR or growth rate with source",\n'
                 '  "landscape_summary": "string — 3-4 paragraph market overview",\n'
                 '  "key_players": [{{"name": "string", "description": "string", "estimated_revenue_or_funding": "string"}}],\n'
-                '  "opportunities": [{{"name": "string", "description": "string", "timing_signal": "string", "evidence": "string"}}],\n'
+                '  "opportunities": [\n'
+                '    {{\n'
+                '      "name": "string",\n'
+                '      "description": "string",\n'
+                '      "timing_signal_type": "REGULATORY_SHIFT|TECHNOLOGY_UNLOCK|BEHAVIORAL_CHANGE|COST_COLLAPSE|DISTRIBUTION_UNLOCK|INCUMBENT_FAILURE",\n'
+                '      "timing_signal": "string — specific evidence with source",\n'
+                '      "evidence": "string — named company or data point",\n'
+                '      "non_obviousness_check": "yes|no",\n'
+                '      "non_obviousness_justification": "string — only required if non_obviousness_check is yes"\n'
+                '    }}\n'
+                '  ],\n'
                 '  "macro_trends": ["string — trend with supporting data"],\n'
-                '  "sources_consulted": ["string — name of report/article/database searched"]\n'
+                '  "sources_consulted": ["string — name of report/article/forum/repo searched"]\n'
                 '}}'
             ),
             "output_key": "landscape",
@@ -63,29 +93,50 @@ STARTUP_IDEA_PIPELINE = {
                 "and identified opportunities. Now go DEEP on the most promising ones.\n\n"
                 "PREVIOUS LANDSCAPE SCAN:\n{landscape}\n\n"
                 "INSTRUCTIONS:\n"
-                "1. Select the 7-8 most promising opportunities from the landscape scan.\n\n"
-                "2. For EACH opportunity, use web search to find:\n"
-                "   a) COMPETITORS: Name every funded startup in this exact niche. Include:\n"
+                "1. Select the 7-8 most promising opportunities from the landscape scan. Bias toward "
+                "ones with non_obviousness_check = 'no' (the non-obvious ones).\n\n"
+                "2. For EACH opportunity, use web search to find:\n\n"
+                "   a) COMPETITORS: Name every funded startup in this exact niche.\n"
                 "      - Company name, founding year, HQ\n"
                 "      - Total funding raised and last round (search Crunchbase, TechCrunch)\n"
                 "      - Current status (active, acquired, shut down)\n"
-                "      - What they do specifically\n\n"
+                "      - What they do specifically\n"
+                "      - IMPORTANT: If you find ZERO competitors, do NOT skip — instead classify why:\n"
+                "        * 'overlooked' = real demand exists but nobody has built it (GREEN FLAG)\n"
+                "        * 'no_demand' = nobody built it because nobody wants it (RED FLAG)\n"
+                "        * 'too_hard' = tried and failed due to technical/regulatory barriers\n"
+                "        * 'too_small' = market is real but too small to attract VC competitors\n"
+                "      Provide evidence for whichever classification you pick.\n\n"
                 "   b) MARKET SIZING: Find at least 2 independent market size estimates.\n"
                 "      - Cite the research firm and report name\n"
                 "      - Note TAM vs SAM vs SOM where possible\n\n"
-                "   c) CUSTOMER EVIDENCE: Search for signals of real demand:\n"
-                "      - Product Hunt launches, G2/Capterra reviews\n"
-                "      - Reddit/HN discussions about this problem\n"
-                "      - Job postings that signal companies hiring for this need\n\n"
-                "   d) BUSINESS MODEL: How would a startup here make money?\n"
-                "      - Pricing benchmarks from existing players\n"
-                "      - Estimated unit economics if data available\n\n"
+                "   c) DEMAND EVIDENCE (tiered): Classify each demand signal you find as one of:\n"
+                "      - HOT: paying customers actively complaining about a gap (Reddit threads with\n"
+                "        '$X/mo for this would be a no-brainer', G2 reviews citing missing features,\n"
+                "        people DIY-ing the solution with spreadsheets)\n"
+                "      - WARM: active discussion or upvoted threads about the problem, but no\n"
+                "        explicit purchase intent yet (HN comments, subreddit posts)\n"
+                "      - COLD: theoretical interest only (analyst reports, 'this would be cool' tweets)\n"
+                "      Aim for at least 2 HOT or WARM signals per opportunity. If you can only find\n"
+                "      COLD signals, mark evidence_strength accordingly.\n\n"
+                "   d) UNIT ECONOMICS: Build a structured economics estimate (don't just say 'pricing\n"
+                "      varies'). For each opportunity, estimate:\n"
+                "      - typical_price_point: e.g. '$29-99/month', '$0.10/API call', '$2000 one-time'\n"
+                "      - billing_model: subscription | usage | one_time | freemium | marketplace_take\n"
+                "      - cac_channel: most likely customer acquisition channel (SEO, cold outbound,\n"
+                "        partnerships, communities, paid ads, viral). Be specific.\n"
+                "      - gross_margin_signal: high (>80%, pure software) | medium (50-80%, has API\n"
+                "        or infra costs) | low (<50%, services/marketplace)\n"
+                "      Base on observed competitor pricing where possible.\n\n"
+                "   e) EARLY FAILURE SIGNAL: Find at least ONE specific risk or red flag for each\n"
+                "      opportunity now (don't wait for the contrarian step). What's the most\n"
+                "      concerning thing you noticed during research?\n\n"
                 "3. Do NOT skip web search for any opportunity. Each one needs fresh data.\n\n"
                 "QUALITY STANDARDS:\n"
                 "- Name real companies with real funding amounts\n"
-                "- If you can't find competitors, that's valuable signal — note it explicitly\n"
                 "- Cross-reference market sizes across multiple sources\n"
-                "- Flag any opportunity where the evidence is thin\n\n"
+                "- Tier every demand signal as HOT/WARM/COLD\n"
+                "- Every opportunity gets an early failure signal — no opportunity is risk-free\n\n"
                 "OUTPUT: Respond with ONLY valid JSON:\n"
                 '{{\n'
                 '  "deep_dive_opportunities": [\n'
@@ -93,11 +144,20 @@ STARTUP_IDEA_PIPELINE = {
                 '      "name": "string",\n'
                 '      "description": "string — 3-5 sentences",\n'
                 '      "competitors": [{{"name": "string", "funding": "string", "founded": "string", "status": "string", "what_they_do": "string"}}],\n'
+                '      "no_competitors_classification": "overlooked|no_demand|too_hard|too_small|null — only set if competitors array is empty",\n'
+                '      "no_competitors_evidence": "string — only required if no_competitors_classification is set",\n'
                 '      "market_size_estimates": [{{"source": "string", "estimate": "string", "year": "string"}}],\n'
-                '      "customer_evidence": ["string — specific signals of demand"],\n'
-                '      "business_model": "string — how this makes money",\n'
-                '      "pricing_benchmarks": "string — what similar products charge",\n'
-                '      "evidence_strength": "strong | moderate | weak",\n'
+                '      "demand_signals": [\n'
+                '        {{"tier": "HOT|WARM|COLD", "source": "string — URL/forum/quote", "signal": "string — what was said or seen"}}\n'
+                '      ],\n'
+                '      "unit_economics": {{\n'
+                '        "typical_price_point": "string",\n'
+                '        "billing_model": "subscription|usage|one_time|freemium|marketplace_take",\n'
+                '        "cac_channel": "string — specific channel",\n'
+                '        "gross_margin_signal": "high|medium|low"\n'
+                '      }},\n'
+                '      "early_failure_signal": "string — most concerning red flag noticed during research",\n'
+                '      "evidence_strength": "strong|moderate|weak",\n'
                 '      "initial_assessment": "string — 2-3 sentence preliminary take"\n'
                 '    }}\n'
                 '  ],\n'
@@ -116,41 +176,73 @@ STARTUP_IDEA_PIPELINE = {
             "job_type": "research",
             "prompt_template": (
                 "You are a skeptical venture capital partner reviewing startup opportunities. "
-                "Your job is to STRESS TEST every opportunity — find the reasons each one could fail.\n\n"
+                "Your job is to STRESS TEST every opportunity — find the reasons each one could fail. "
+                "Vague risks are useless; every claim needs a specific name, date, or source.\n\n"
                 "DEEP DIVE RESEARCH:\n{deep_dive}\n\n"
                 "INSTRUCTIONS:\n"
                 "For EACH opportunity in the deep dive, use web search to investigate:\n\n"
-                "1. FAILURE PATTERNS: Search for startups that have FAILED in this space.\n"
-                "   - What companies tried this and shut down? Why?\n"
-                "   - What pivots happened? What does that tell us?\n\n"
-                "2. INCUMBENT THREAT: How could big players kill this?\n"
-                "   - Could Google/Microsoft/Amazon/etc. build this as a feature?\n"
-                "   - Are existing platforms expanding into this space?\n"
-                "   - Search for recent announcements from incumbents\n\n"
+                "1. NAMED FAILURE PATTERNS: Find SPECIFIC startups that died in this space.\n"
+                "   - Required: company name + year shut down/pivoted + specific reason\n"
+                "   - Do NOT say 'many startups failed' — name them or omit the claim\n"
+                "   - Search: '[domain] startup shutdown', '[domain] post-mortem', failory.com,\n"
+                "     'lessons learned [niche]', acquired/dead startup databases\n"
+                "   - If you genuinely cannot find any failures after searching, say so explicitly\n"
+                "     (this is itself meaningful — either too new or nobody tried)\n\n"
+                "2. INCUMBENT THREAT (5-year look-back required): How could big players kill this?\n"
+                "   - Identify the 3-5 most likely incumbents (Google, Microsoft, Amazon, Meta, Apple,\n"
+                "     Salesforce, Adobe, Stripe, OpenAI, Anthropic, dominant vertical players)\n"
+                "   - For each, search '[Incumbent] + [domain]' for the LAST 24 MONTHS of activity\n"
+                "   - Cite specific announcements, product launches, acquisitions, or job postings\n"
+                "   - 'Could build it as a feature' is too speculative — find evidence they're already\n"
+                "     moving in this direction OR explain why they structurally won't\n\n"
                 "3. MARKET HEADWINDS:\n"
-                "   - Is the market actually growing or is that projection stale?\n"
-                "   - Are there regulatory risks? Search for relevant regulation\n"
-                "   - Is there customer acquisition cost evidence that makes this unviable?\n\n"
-                "4. TECHNICAL RISKS:\n"
-                "   - Is the core technology actually ready?\n"
-                "   - Are there unsolved hard problems?\n"
-                "   - Could the solution be commoditized quickly?\n\n"
-                "5. VERDICT: After this analysis, classify each opportunity:\n"
-                "   - SURVIVES: The opportunity holds up under scrutiny\n"
-                "   - WEAKENED: Still viable but with significant caveats\n"
-                "   - KILLED: Fatal flaws found — should not pursue\n\n"
-                "Be ruthlessly honest. It's better to kill a bad idea now than waste months building it.\n\n"
+                "   - Is the market actually growing or is the projection stale? Cross-check.\n"
+                "   - Is there CAC evidence that makes this unviable? (Compare to LTV from unit_economics)\n"
+                "   - Are user behaviors shifting AWAY from this category?\n\n"
+                "4. REGULATORY CHECKLIST: First, self-identify if this domain is REGULATED:\n"
+                "   - Fintech / payments / lending / crypto → CFPB, SEC, state money transmitter laws\n"
+                "   - Healthcare / medical / wellness data → HIPAA, FDA, state telehealth laws\n"
+                "   - Education / K-12 → FERPA, COPPA, state-level requirements\n"
+                "   - Children's products → COPPA, age verification\n"
+                "   - EU users → GDPR, AI Act, DSA\n"
+                "   - Hiring / HR / employment → EEOC, state AI hiring laws (NYC, Illinois, etc.)\n"
+                "   - Insurance, real estate, legal, tax → state-by-state licensing\n"
+                "   For each opportunity in a regulated domain, search for 'recent enforcement [domain]'\n"
+                "   and 'pending regulation [domain]' and report concrete findings.\n"
+                "   For non-regulated domains, set regulatory_risk to 'none_identified'.\n\n"
+                "5. TECHNICAL RISKS:\n"
+                "   - Is the core technology actually ready? Cite the limiting factor.\n"
+                "   - Are there unsolved hard problems (latency, accuracy, cost-per-call)?\n"
+                "   - Could the solution be commoditized within 12 months?\n\n"
+                "6. KILL SCENARIO PROBABILITY: Beyond the kill_scenario string, assign a probability:\n"
+                "   - LOW: <25% chance this kills the startup in year 1\n"
+                "   - MEDIUM: 25-60% chance\n"
+                "   - HIGH: >60% chance — should probably be a 'killed' verdict\n\n"
+                "7. VERDICT: Classify each opportunity:\n"
+                "   - SURVIVES: Holds up under scrutiny, kill probability LOW\n"
+                "   - WEAKENED: Still viable but with significant caveats, kill probability MEDIUM\n"
+                "   - KILLED: Fatal flaws found, kill probability HIGH\n\n"
+                "Be ruthlessly honest. Vague risks help nobody. Every claim needs a name, a date, or a URL.\n\n"
                 "OUTPUT: Respond with ONLY valid JSON:\n"
                 '{{\n'
                 '  "contrarian_analyses": [\n'
                 '    {{\n'
                 '      "name": "string",\n'
-                '      "failed_predecessors": [{{"company": "string", "what_happened": "string", "lesson": "string"}}],\n'
-                '      "incumbent_threats": ["string — specific threat with evidence"],\n'
-                '      "market_headwinds": ["string — specific headwind"],\n'
-                '      "technical_risks": ["string — specific risk"],\n'
+                '      "failed_predecessors": [{{"company": "string", "year": "string", "what_happened": "string", "lesson": "string"}}],\n'
+                '      "incumbent_threats": [\n'
+                '        {{"incumbent": "string", "evidence": "string — specific announcement/launch/posting in last 24 months", "source": "string — URL or article name"}}\n'
+                '      ],\n'
+                '      "market_headwinds": ["string — specific headwind with source"],\n'
+                '      "regulatory_risk": {{\n'
+                '        "is_regulated_domain": true,\n'
+                '        "regulatory_bodies": ["string — e.g. CFPB, HIPAA, GDPR"],\n'
+                '        "specific_risks": ["string — concrete enforcement actions or pending rules"],\n'
+                '        "compliance_burden": "low|medium|high"\n'
+                '      }},\n'
+                '      "technical_risks": ["string — specific risk with evidence"],\n'
                 '      "kill_scenario": "string — the most likely way this startup dies",\n'
-                '      "verdict": "survives | weakened | killed",\n'
+                '      "kill_probability": "low|medium|high",\n'
+                '      "verdict": "survives|weakened|killed",\n'
                 '      "verdict_reasoning": "string — 3-5 sentences explaining the verdict"\n'
                 '    }}\n'
                 '  ],\n'
@@ -168,26 +260,70 @@ STARTUP_IDEA_PIPELINE = {
             "name": "synthesis_and_ranking",
             "job_type": "research",
             "prompt_template": (
-                "You are a startup strategist producing a final investment-grade analysis. "
-                "Synthesize all previous research into a definitive ranking.\n\n"
+                "You are a startup strategist producing a final investment-grade analysis for a "
+                "SOLO DEVELOPER. Synthesize all previous research into a definitive, comparative ranking.\n\n"
                 "LANDSCAPE:\n{landscape}\n\n"
                 "DEEP DIVE:\n{deep_dive}\n\n"
                 "CONTRARIAN ANALYSIS:\n{contrarian}\n\n"
                 "INSTRUCTIONS:\n"
                 "1. Only include opportunities that received a 'survives' or 'weakened' verdict.\n"
                 "   Drop anything that was 'killed' in the contrarian analysis.\n\n"
-                "2. Score each surviving opportunity on these dimensions (1-10):\n"
-                "   - market_timing: Is now the right time? (based on trends and evidence)\n"
-                "   - defensibility: Can a moat be built? (based on competitor analysis)\n"
-                "   - solo_dev_feasibility: Can one person build an MVP? (technical complexity)\n"
-                "   - revenue_potential: Can this reach $10K+ MRR within 12 months?\n"
-                "   - evidence_quality: How strong is the supporting data?\n\n"
-                "3. For the top 5, write a detailed MVP specification:\n"
-                "   - What exactly to build (features, not vague descriptions)\n"
-                "   - Tech stack recommendation\n"
-                "   - Estimated build time for a solo developer\n"
-                "   - First 3 customers to target\n"
-                "   - How to validate demand before building\n\n"
+                "2. Score each surviving opportunity on five dimensions (integer 1-10). Use these "
+                "ANCHORS so scores are comparable across runs — do not invent your own scale:\n\n"
+                "   market_timing (is NOW the right moment?)\n"
+                "     1 = market is dead, declining, or 5+ years too early\n"
+                "     5 = stable market, no obvious tailwind or headwind\n"
+                "     8 = clear timing signal in last 12 months (regulation, tech unlock, behavior shift)\n"
+                "     10 = inflection point happening RIGHT NOW with multiple converging signals\n\n"
+                "   defensibility (derived from the moats taxonomy below — see step 3)\n"
+                "     1 = pure commodity, anyone can clone in a weekend\n"
+                "     5 = some workflow lock-in or modest switching cost\n"
+                "     8 = real moat in at least one dimension (network, data, distribution)\n"
+                "     10 = strong moats in 2+ dimensions, proven hard to displace\n\n"
+                "   solo_dev_feasibility (can ONE person build a real MVP in <8 weeks?)\n"
+                "     1 = needs a team, hardware, or 6+ months of work\n"
+                "     5 = doable but tight; requires niche expertise\n"
+                "     8 = standard web/API stack, 4-6 weeks for a competent solo dev\n"
+                "     10 = trivially buildable with off-the-shelf tools in <2 weeks\n\n"
+                "   revenue_potential (path to $10K+ MRR within 12 months)\n"
+                "     1 = no clear willingness to pay, tiny market, or pure hobby\n"
+                "     5 = plausible $1-3K MRR with significant effort\n"
+                "     8 = clear comparable players hitting $10K+ MRR with similar scope\n"
+                "     10 = obvious paying demand, short sales cycle, $20K+ MRR realistic\n\n"
+                "   evidence_quality (how strong is the supporting data from prior steps?)\n"
+                "     1 = mostly speculation, no named sources\n"
+                "     5 = a few cited sources, some demand signals\n"
+                "     8 = multiple independent sources, named competitors with funding, real demand\n"
+                "     10 = paying customers visibly complaining, multiple $10M+ funded competitors\n\n"
+                "3. For each surviving opportunity, build a MOATS taxonomy. Rate each moat type as "
+                "'none', 'weak', or 'strong' with a one-sentence justification. The defensibility "
+                "score above should be derived from this taxonomy:\n"
+                "   - network_effects: does value grow with more users?\n"
+                "   - switching_costs: how painful to leave once adopted?\n"
+                "   - data_advantage: does proprietary data improve the product over time?\n"
+                "   - brand_or_trust: does brand reputation create a buying preference?\n"
+                "   - distribution_lock: privileged access to a channel competitors can't reach?\n\n"
+                "4. Compute a WEIGHTED total score (max 100) using these weights for a solo dev:\n"
+                "   total_score = (solo_dev_feasibility * 1.5) + (revenue_potential * 1.5) + \n"
+                "                 (market_timing * 1.0) + (defensibility * 1.0) + (evidence_quality * 0.5)\n"
+                "   Round to one decimal. Solo dev feasibility and revenue potential matter most.\n\n"
+                "5. RANK opportunities by weighted total_score (highest first). For each ranked "
+                "opportunity, also write a 'head_to_head' field explaining WHY it beats the opportunity "
+                "ranked one position below it (the lowest-ranked one explains why it still made the cut).\n"
+                "   This forces real comparison instead of isolated scoring.\n\n"
+                "6. For the top 5, write a STRICT MVP specification. An MVP here means:\n"
+                "   'Deployable software with at least one real user-facing feature that solves the "
+                "core problem end-to-end.' NOT a landing page. NOT a mockup. NOT a waitlist.\n\n"
+                "   Each MVP spec must include:\n"
+                "   - what_to_build: concrete features (not vague descriptions)\n"
+                "   - core_user_journey: the ONE workflow the MVP must demonstrate end-to-end\n"
+                "   - tech_stack: specific frameworks/services\n"
+                "   - build_time_weeks: realistic estimate for solo dev (be honest, not optimistic)\n"
+                "   - first_customers: 3 specific customer types reachable without paid ads\n"
+                "   - validation_approach: how to validate paying demand BEFORE building\n"
+                "   - out_of_scope: 3 features explicitly NOT in the MVP (prevents scope creep)\n"
+                "   - success_metric: how you'll know post-launch if the MVP is working\n"
+                "   - risky_assumption: the ONE belief that, if wrong, kills the idea\n\n"
                 "OUTPUT: Respond with ONLY valid JSON:\n"
                 '{{\n'
                 '  "final_rankings": [\n'
@@ -202,14 +338,26 @@ STARTUP_IDEA_PIPELINE = {
                 '        "revenue_potential": 8,\n'
                 '        "evidence_quality": 7\n'
                 '      }},\n'
-                '      "total_score": 39,\n'
+                '      "moats": {{\n'
+                '        "network_effects": {{"rating": "none|weak|strong", "justification": "string"}},\n'
+                '        "switching_costs": {{"rating": "none|weak|strong", "justification": "string"}},\n'
+                '        "data_advantage": {{"rating": "none|weak|strong", "justification": "string"}},\n'
+                '        "brand_or_trust": {{"rating": "none|weak|strong", "justification": "string"}},\n'
+                '        "distribution_lock": {{"rating": "none|weak|strong", "justification": "string"}}\n'
+                '      }},\n'
+                '      "total_score": 38.5,\n'
+                '      "head_to_head": "string — why this beats the next-ranked opportunity",\n'
                 '      "surviving_risks": ["string — risks that remain after contrarian analysis"],\n'
                 '      "mvp_spec": {{\n'
                 '        "what_to_build": "string — specific features",\n'
+                '        "core_user_journey": "string — the one end-to-end workflow",\n'
                 '        "tech_stack": "string",\n'
                 '        "build_time_weeks": 4,\n'
-                '        "first_customers": ["string — specific customer types to target"],\n'
-                '        "validation_approach": "string — how to validate before building"\n'
+                '        "first_customers": ["string — specific reachable customer types"],\n'
+                '        "validation_approach": "string — how to validate paying demand pre-build",\n'
+                '        "out_of_scope": ["string — feature 1 NOT in MVP", "string — feature 2", "string — feature 3"],\n'
+                '        "success_metric": "string — how to know post-launch if it is working",\n'
+                '        "risky_assumption": "string — the one belief that if wrong kills it"\n'
                 '      }}\n'
                 '    }}\n'
                 '  ],\n'
@@ -237,19 +385,37 @@ STARTUP_IDEA_PIPELINE = {
             "name": "build_mvp",
             "job_type": "builder",
             "prompt_template": (
-                "Build an MVP based on this startup research and evaluation.\n\n"
+                "Build an MVP for the TOP-RANKED idea from this startup research synthesis.\n\n"
                 "FINAL SYNTHESIS AND RANKING:\n{synthesis}\n\n"
-                "Build a working, functional MVP for the top-ranked idea. Use the mvp_spec "
-                "from the synthesis to guide what to build.\n\n"
+                "SCOPE RULES — READ CAREFULLY:\n"
+                "1. Build ONLY the rank-1 opportunity. Ignore ranks 2-5 entirely. Do not blend ideas.\n"
+                "2. Use ONLY the rank-1 opportunity's mvp_spec as your specification. In particular:\n"
+                "   - what_to_build → these are your features\n"
+                "   - core_user_journey → this is the ONE workflow that MUST work end-to-end\n"
+                "   - tech_stack → use this stack unless there is a hard technical reason not to\n"
+                "   - out_of_scope → these features are FORBIDDEN. Do not add them even if tempting.\n"
+                "   - success_metric → instrument the code so this metric can be measured post-launch\n"
+                "   - risky_assumption → the build should make this assumption testable as fast as possible\n\n"
+                "3. MVP DEFINITION (non-negotiable): 'Deployable software with at least one real "
+                "user-facing feature that solves the core problem end-to-end.' This means:\n"
+                "   - NOT a landing page with a waitlist\n"
+                "   - NOT a mockup or design file\n"
+                "   - NOT a coming-soon page\n"
+                "   - YES a working app/API/CLI that a real user could use today\n\n"
                 "REQUIREMENTS:\n"
                 "- Complete project with all dependencies installed\n"
-                "- Core features implemented and working (not stubs)\n"
+                "- Core features implemented and WORKING (not stubs, not TODOs)\n"
+                "- The core_user_journey from the spec must work end-to-end\n"
                 "- API endpoints if it's a backend service\n"
                 "- Basic UI if applicable\n"
                 "- README.md with: what it does, how to set up, how to run, environment variables needed\n"
                 "- Dockerfile for deployment\n"
-                "- .env.example with all required environment variables documented\n\n"
-                "Make it real. Someone should be able to clone this repo and have a working product in 5 minutes."
+                "- .env.example with all required environment variables documented\n"
+                "- BUILD_DECISIONS.md explaining: (a) why you chose the tech stack you used, "
+                "(b) any tradeoffs you made, (c) what you intentionally did NOT build (echo the "
+                "out_of_scope list from the spec), (d) how a future user would test the risky_assumption\n\n"
+                "Make it real. Someone should be able to clone this repo and have a working product "
+                "in 5 minutes. If it can't pass that test, it isn't an MVP — it's a prototype."
             ),
             "output_key": "mvp_result",
             "condition": {"field": "synthesis", "operator": "not_empty"},
@@ -831,7 +997,7 @@ STRATEGY_EVOLUTION_PIPELINE = {
                 '    "timeframe": "1D",\n'
                 '    "description": "string"\n'
                 '  }},\n'
-                '  "start_date": "2005-01-01",\n'
+                '  "start_date": "2011-01-01",\n'
                 '  "end_date": "2024-12-31",\n'
                 '  "initial_capital": {starting_capital},\n'
                 '  "test_type": "walk_forward"\n'
@@ -893,7 +1059,7 @@ STRATEGY_EVOLUTION_PIPELINE = {
                 '    "timeframe": "1D",\n'
                 '    "description": "string"\n'
                 '  }},\n'
-                '  "start_date": "2005-01-01",\n'
+                '  "start_date": "2011-01-01",\n'
                 '  "end_date": "2024-12-31",\n'
                 '  "initial_capital": {starting_capital},\n'
                 '  "test_type": "walk_forward",\n'
