@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 from pydantic import BaseModel, ValidationError
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -84,11 +86,51 @@ async def execute_research_job(session: AsyncSession, job: JobRow) -> None:
             iteration_count=2,
         )
 
+        # Round 4: throttled streaming progress callback. Updates the
+        # JobRow's progress_message and live token/cost columns at most
+        # every 5 seconds while Claude is generating output. The existing
+        # /workflows/{id}/stream SSE endpoint surfaces these updates so
+        # the user sees real progress instead of "researching..." for 30 min.
+        progress_state = {"last_update": 0.0}
+
+        async def progress_cb(snapshot: dict) -> None:
+            now = time.monotonic()
+            if now - progress_state["last_update"] < 5.0:
+                return
+            progress_state["last_update"] = now
+            chars = snapshot.get("accumulated_chars", 0)
+            usage = snapshot.get("usage") or {}
+            model = snapshot.get("model")
+            output_tokens = usage.get("output_tokens", 0) if isinstance(usage, dict) else 0
+            try:
+                await update_job_progress(
+                    session,
+                    job.id,
+                    progress_message=(
+                        f"Streaming output ({chars:,} chars, {output_tokens} tokens out)"
+                    ),
+                )
+                if usage:
+                    partial = extract_usage({"usage": usage, "model": model})
+                    if partial["input_tokens"] is not None:
+                        await session.execute(
+                            update(JobRow).where(JobRow.id == job.id).values(
+                                tokens_input=partial["input_tokens"],
+                                tokens_output=partial["output_tokens"],
+                                estimated_cost_usd=partial["estimated_cost_usd"],
+                            )
+                        )
+                        await session.commit()
+            except Exception:
+                # Never let progress updates kill the run
+                logger.exception("research progress_cb failed; continuing")
+
         result = await run_claude(
             prompt,
             allow_permissions=True,
             model=settings.research_model,
             timeout=timeout_override,
+            on_progress=progress_cb,
         )
 
         # Step 3: Parse and store

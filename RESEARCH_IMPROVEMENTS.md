@@ -193,7 +193,81 @@ python3 -m pytest \
 
 ## Deferred to Round 4
 
-- [ ] Streaming partial results during 20-30 min Claude calls (architectural — needs SSE through claude_runner)
-- [ ] Evidence verification post-processing (needs a web-search verification step)
-- [ ] Worker-restart race condition with distributed locking (real but lower priority)
-- [ ] Full contributor documentation (separate writing effort)
+- [x] **Streaming partial results** — Round 4: `run_claude` now defaults to `--output-format stream-json`. Line-by-line event parsing with optional `on_progress` callback. research.py and builder.py both use a throttled (5s) callback that updates `progress_message`, `tokens_input`, `tokens_output`, `estimated_cost_usd` in real time. `WorkflowProgressEvent` extended with `current_job_id` and live token/cost fields. Script displays live tokens in the polling line.
+- [ ] Evidence verification post-processing (needs a web-search verification step) — deferred to Round 5
+- [ ] Worker-restart race condition with distributed locking (real but lower priority) — deferred to Round 5
+- [x] **Targeted contributor doc** — Round 4: new `docs/ADDING_A_TEMPLATE.md` walks through the 5-step recipe for adding a new workflow template with references to the existing startup_idea_pipeline as the worked example.
+
+### Round 4: Bug Hardening, Test Coverage, and Live Progress Visibility
+
+A fresh sweep after Round 3 turned up two real bugs that tests were hiding by luck, plus several uncovered code paths. Round 4 fixes them AND adds the headline deferred feature — live progress visibility during long Claude calls.
+
+**Bug A fixed: `selected_idea` was rendered as Python `repr()`, not JSON.**
+- `_render_prompt` in `app/services/workflow_service.py` used `str(v) for v in context.values()`. For Python dicts (the shape `selected_idea` takes after Round 3's `context_overrides` path), `str()` produces `{'rank': 2, 'name': '...'}` — Python repr, NOT JSON. The Round 3 test passed only because `"second idea"` happened to be a substring of the Python repr.
+- Fix: new `_stringify_for_prompt` helper that JSON-encodes dicts and lists with `indent=2`. Strings pass through unchanged so existing JSON-string step outputs keep working.
+- Tests: 7 new regression tests in `test_workflow_context_pruning.py` asserting dict values render as valid JSON, list values render as valid JSON, and string values remain untouched.
+
+**Bug B fixed: `extract_usage` crashed on string token counts.**
+- `claude_runner.py` did `usage.get("cache_creation_input_tokens") or 0` — preserves any truthy value as-is, including strings. Then `input_tokens + cache_creation + cache_read` raised `TypeError: int + str` when a buggy CLI version emitted `"100"`.
+- Fix: new `_safe_int` helper that coerces int/str/None defensively. All four usage fields now go through it.
+- Tests: 6 new regression tests in `test_research_validation.py` covering string cache tokens, string primary tokens, garbage values, and the helper directly.
+
+**Loop count semantics clarified (doc-only).** Added a docstring to `StepDefinition.max_loop_count` explaining the exact semantics: "maximum number of times the loop_to step is allowed to execute, INCLUDING its initial run." Plus 3 new tests in `test_loop_recovery.py` documenting the boundary math (`max=2 → 2 total runs, max=1 disables loop, max=3 → 3 total runs`).
+
+**Test coverage gaps closed:**
+- `test_workflow_approval.py`: 3 new tests for malformed synthesis fallback (empty rankings, null rank-1, empty-dict rank-1) — proves the fallback doesn't crash on edge cases
+- `tests/test_workflow_cost_aggregation.py` (NEW): 2 DB-bound tests proving `total_estimated_cost_usd` is `None` (not 0) when no jobs report usage, and sums correctly when they do
+- `test_builder_artifact_enforcement.py`: +1 test asserting the missing-artifact path raises `ClaudeRunError` specifically (the exact exception type that triggers max_retries)
+
+**Headline new feature: streaming Claude CLI output.**
+- `run_claude` in `app/services/claude_runner.py` defaults to `--output-format stream-json --verbose`
+- New `_run_claude_streaming` helper reads `process.stdout.readline()` in an async loop, parses each line as a JSON event, accumulates `type: assistant` text blocks, and extracts `usage`/`model` from system init and result events
+- Malformed lines are skipped with a debug log (not fatal)
+- Deadline check on every iteration → timely `ClaudeTimeoutError` even mid-stream
+- Legacy `_run_claude_buffered` path kept for `output_format != "stream-json"` callers
+- Returns the SAME dict shape as before so existing callers don't change
+- Optional `on_progress` callback fires once per parsed event with `{accumulated_chars, usage, model}`. Misbehaving callbacks are caught and logged; they never kill the run
+- `research.py` and `builder.py` wire up a 5-second throttled callback that updates `progress_message`, `tokens_input`, `tokens_output`, `estimated_cost_usd` on the JobRow during long-running Claude calls
+- `WorkflowProgressEvent` extended with `current_job_id`, `tokens_input_so_far`, `tokens_output_so_far`, `cost_so_far_usd`
+- `/workflows/{id}/stream` SSE endpoint populates the new fields from the latest job
+- `scripts/run_startup_pipeline.sh` polling line now shows `| 12,453 in / 3,201 out | $0.0832` when live cost data is present
+
+**Test framework — 14 new tests, 145 total passing locally:**
+
+| File | Tests | Purpose |
+|---|---|---|
+| `tests/test_workflow_context_pruning.py` | +7 | Bug A regression + `_stringify_for_prompt` helper |
+| `tests/test_research_validation.py` | +6 | Bug B regression + `_safe_int` helper |
+| `tests/test_loop_recovery.py` | +3 | Loop count boundary math |
+| `tests/test_workflow_approval.py` | +3 (DB) | Fallback edge cases with malformed synthesis |
+| `tests/test_workflow_cost_aggregation.py` | **NEW** 2 (DB) | SUM returns None when all null, sums correctly otherwise |
+| `tests/test_builder_artifact_enforcement.py` | +1 | Exact exception type (ClaudeRunError) is raised |
+| `tests/test_claude_runner_streaming.py` | **NEW** 8 | Stream-json runner: assembles result, calls on_progress, handles malformed JSON, handles empty lines, nonzero exit, timeout, callback exception tolerance |
+
+**Local verification:**
+```
+python3 -m pytest \
+  tests/test_startup_schemas.py tests/test_prompt_schema_alignment.py \
+  tests/test_research_validation.py tests/test_workflow_context_pruning.py \
+  tests/test_workflow_retry.py tests/test_loop_recovery.py \
+  tests/test_builder_artifact_enforcement.py tests/test_workflow_models.py \
+  tests/test_research_models.py tests/test_builder_models.py \
+  tests/test_claude_runner_streaming.py \
+  --noconftest -q -k "not (failed_step or exhausted)"
+# 145 passed in 1.52s
+```
+
+**Pending deployment:** commit + push + git pull + `docker compose build api && docker compose up -d api`. **No new alembic migration** — Round 4 reuses the token/cost columns from Round 3's `0004` migration.
+
+**Manual verification (post-deploy):**
+1. Start a fresh startup_idea_pipeline run and watch the polling line — token counts should increment during long Claude calls, not stay at zero until the job finishes
+2. Hit `GET /workflows/{id}/stream` and confirm the SSE events contain `current_job_id`, `tokens_input_so_far`, and `cost_so_far_usd`
+3. After approval, inspect the build_mvp job's prompt via psql — the `SELECTED OPPORTUNITY:` block should contain valid JSON (verified parseable), not Python repr with single quotes
+4. Run a build that intentionally omits `BUILD_DECISIONS.md` → confirm the first attempt fails with a `ClaudeRunError` about missing artifacts and the retry kicks in automatically
+
+## Deferred to Round 5
+
+- [ ] Evidence verification post-processing (needs a separate Claude call with web search; non-trivial design)
+- [ ] Worker-restart race condition with distributed locking (rare in practice)
+- [ ] Schema versioning v2 path (premature until we actually need to break v1)
+- [ ] Full CONTRIBUTING.md / WORKFLOW_DESIGN.md guides (the targeted `docs/ADDING_A_TEMPLATE.md` ships in Round 4; broader guides can come later)

@@ -40,6 +40,20 @@ class StepDefinition(BaseModel):
     timeout_override: int | None = None
     loop_to: int | None = None
     max_loop_count: int | None = None
+    """Maximum number of times the ``loop_to`` step is allowed to execute,
+    INCLUDING its initial run.
+
+    Set to ``2`` for "run once, then loop back at most once more (= 2 total
+    executions of the loop_to step)". Set to ``1`` to effectively disable
+    looping (the step runs once and the loop never fires because the
+    counter immediately equals max).
+
+    Note: this counts executions of the ``loop_to`` step itself, NOT
+    iterations of the loop body. With Round 3's ``loop_condition``, the
+    loop only fires when both the condition is true AND the count is
+    below this maximum. See ``advance_workflow`` in
+    ``app/services/workflow_service.py`` for the exact check.
+    """
     requires_approval: bool = False  # if True, workflow pauses before this step
     max_retries: int = 0  # auto-retry this step N times before failing the workflow
     output_schema: str | None = None
@@ -128,3 +142,10 @@ class WorkflowProgressEvent(BaseModel):
     current_step_index: int
     current_step_name: str | None = None
     progress_message: str | None = None
+    # Round 4: live cost visibility during long runs. Populated from the
+    # latest job's row, which is updated every ~5 seconds by the streaming
+    # progress callback in research.py / builder.py.
+    current_job_id: uuid.UUID | None = None
+    tokens_input_so_far: int | None = None
+    tokens_output_so_far: int | None = None
+    cost_so_far_usd: float | None = None

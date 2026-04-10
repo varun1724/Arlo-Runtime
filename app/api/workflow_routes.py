@@ -231,9 +231,19 @@ async def stream_workflow(
                 # Get current job's progress
                 jobs = await workflow_service.get_workflow_jobs(session, workflow_id)
                 progress_msg = None
+                current_job_id = None
+                tokens_input_so_far = None
+                tokens_output_so_far = None
+                cost_so_far_usd = None
                 if jobs:
                     latest_job = jobs[-1]
                     progress_msg = latest_job.progress_message
+                    # Round 4: surface the latest job's identity and live
+                    # token/cost data so SSE clients can show real progress.
+                    current_job_id = latest_job.id
+                    tokens_input_so_far = latest_job.tokens_input
+                    tokens_output_so_far = latest_job.tokens_output
+                    cost_so_far_usd = latest_job.estimated_cost_usd
 
                 event = WorkflowProgressEvent(
                     workflow_id=wf.id,
@@ -241,6 +251,10 @@ async def stream_workflow(
                     current_step_index=wf.current_step_index,
                     current_step_name=current_step_name,
                     progress_message=progress_msg,
+                    current_job_id=current_job_id,
+                    tokens_input_so_far=tokens_input_so_far,
+                    tokens_output_so_far=tokens_output_so_far,
+                    cost_so_far_usd=cost_so_far_usd,
                 )
                 yield {"data": event.model_dump_json()}
 

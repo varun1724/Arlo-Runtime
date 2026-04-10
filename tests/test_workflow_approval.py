@@ -287,3 +287,151 @@ async def test_skip_step_with_approved_false_advances(client):
     # if the workflow wasn't actually awaiting approval. Both are acceptable
     # behaviors — what matters is that no unexpected exception escapes.
     assert approve.status_code in (200, 400)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 4: approval fallback edge cases (malformed synthesis)
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def _setup_workflow_with_synthesis(client, name: str, synthesis_payload: dict | str) -> uuid.UUID:
+    """Helper: build a 3-step workflow, mark step 0 succeeded with the
+    given synthesis payload, advance to the approval gate. Returns the
+    workflow_id ready for an approve call.
+    """
+    from sqlalchemy import select
+
+    from app.db.engine import async_session
+    from app.db.models import JobRow
+    from app.models.job import JobStatus
+    from app.services.workflow_service import advance_workflow
+
+    create = await client.post(
+        "/workflows",
+        json={
+            "name": name,
+            "steps": [
+                {
+                    "name": "fake_research",
+                    "job_type": "research",
+                    "prompt_template": "Pretend",
+                    "output_key": "synthesis",
+                },
+                {
+                    "name": "fake_approval",
+                    "job_type": "research",
+                    "prompt_template": "approval",
+                    "output_key": "_approval",
+                    "requires_approval": True,
+                },
+                {
+                    "name": "fake_consumer",
+                    "job_type": "research",
+                    "prompt_template": "Build for: {selected_idea}",
+                    "output_key": "build_result",
+                    "context_inputs": ["selected_idea"],
+                },
+            ],
+            "initial_context": {},
+        },
+    )
+    workflow_id = uuid.UUID(create.json()["id"])
+
+    async with async_session() as session:
+        first_job = (
+            await session.execute(select(JobRow).where(JobRow.workflow_id == workflow_id))
+        ).scalars().one()
+        first_job.status = JobStatus.SUCCEEDED.value
+        first_job.result_data = (
+            json.dumps(synthesis_payload)
+            if not isinstance(synthesis_payload, str)
+            else synthesis_payload
+        )
+        first_job.completed_at = datetime.now(timezone.utc)
+        await session.commit()
+        await advance_workflow(session, workflow_id)
+
+    return workflow_id
+
+
+@pytest.mark.asyncio
+async def test_approve_fallback_with_empty_rankings_does_not_crash(client):
+    """Round 4: synthesis with empty final_rankings → fallback skips,
+    approve still succeeds (no selected_idea injected)."""
+    from app.db.engine import async_session
+    from app.db.models import WorkflowRow
+
+    workflow_id = await _setup_workflow_with_synthesis(
+        client,
+        "approval_empty_rankings",
+        {"final_rankings": [], "executive_summary": "all killed"},
+    )
+
+    approve = await client.post(
+        f"/workflows/{workflow_id}/approve",
+        json={"approved": True},
+    )
+    assert approve.status_code == 200, approve.text
+
+    # The fallback should NOT have injected selected_idea (no rank-1 to use)
+    async with async_session() as session:
+        wf = await session.get(WorkflowRow, workflow_id)
+        ctx = json.loads(wf.context)
+        assert "selected_idea" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_approve_fallback_with_null_rank1_does_not_crash(client):
+    """Round 4: synthesis with [null] in final_rankings → fallback handles gracefully."""
+    from app.db.engine import async_session
+    from app.db.models import WorkflowRow
+
+    workflow_id = await _setup_workflow_with_synthesis(
+        client,
+        "approval_null_rank1",
+        {"final_rankings": [None], "executive_summary": "x"},
+    )
+
+    approve = await client.post(
+        f"/workflows/{workflow_id}/approve",
+        json={"approved": True},
+    )
+    assert approve.status_code == 200, approve.text
+
+    # The fallback DID grab rankings[0]=None and injected it. That's
+    # technically what happened, and it's fine — the downstream consumer
+    # would see a null in its prompt and Claude would respond accordingly.
+    # The key assertion: no crash.
+    async with async_session() as session:
+        wf = await session.get(WorkflowRow, workflow_id)
+        ctx = json.loads(wf.context)
+        # Either the fallback skipped None (good) or it stored None (also OK).
+        # We accept both — the contract is "don't crash".
+        if "selected_idea" in ctx:
+            assert ctx["selected_idea"] is None
+
+
+@pytest.mark.asyncio
+async def test_approve_fallback_with_minimal_rank1_dict(client):
+    """Round 4: synthesis with [{}] (empty dict) in final_rankings.
+    Fallback stores the empty dict; downstream renders as '{}'."""
+    from app.db.engine import async_session
+    from app.db.models import WorkflowRow
+
+    workflow_id = await _setup_workflow_with_synthesis(
+        client,
+        "approval_minimal_rank1",
+        {"final_rankings": [{}], "executive_summary": "x"},
+    )
+
+    approve = await client.post(
+        f"/workflows/{workflow_id}/approve",
+        json={"approved": True},
+    )
+    assert approve.status_code == 200, approve.text
+
+    async with async_session() as session:
+        wf = await session.get(WorkflowRow, workflow_id)
+        ctx = json.loads(wf.context)
+        # Empty dict was injected as selected_idea
+        assert ctx.get("selected_idea") == {}

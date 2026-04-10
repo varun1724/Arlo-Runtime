@@ -260,3 +260,82 @@ def test_friendly_error_handles_root_path():
         msg = _friendly_validation_error(e)
         assert msg  # non-empty
         assert isinstance(msg, str)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 4: Bug B regression — extract_usage tolerates string token counts
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_safe_int_helper_handles_int():
+    from app.services.claude_runner import _safe_int
+    assert _safe_int(42) == 42
+    assert _safe_int(0) == 0
+
+
+def test_safe_int_helper_handles_string():
+    from app.services.claude_runner import _safe_int
+    assert _safe_int("100") == 100
+    assert _safe_int("0") == 0
+
+
+def test_safe_int_helper_handles_garbage():
+    from app.services.claude_runner import _safe_int
+    assert _safe_int(None) is None
+    assert _safe_int("not a number") is None
+    assert _safe_int([]) is None
+    assert _safe_int({}) is None
+    # bool is a subclass of int but we treat it as not-an-int
+    assert _safe_int(True) is None
+
+
+def test_extract_usage_string_cache_tokens_does_not_crash():
+    """Round 4 Bug B: previously, cache token counts as strings would crash
+    with TypeError: int + str. Now they're safely coerced via _safe_int."""
+    from app.services.claude_runner import extract_usage
+    output = {
+        "model": "claude-sonnet-4",
+        "usage": {
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "cache_creation_input_tokens": "200",  # string instead of int
+            "cache_read_input_tokens": "50",
+        },
+    }
+    result = extract_usage(output)
+    # Should NOT crash — and should sum the cache tokens into input
+    assert result["input_tokens"] == 1000 + 200 + 50
+    assert result["output_tokens"] == 500
+    assert result["estimated_cost_usd"] is not None
+    assert result["estimated_cost_usd"] > 0
+
+
+def test_extract_usage_string_input_and_output_tokens():
+    """Even the primary token fields should tolerate string values."""
+    from app.services.claude_runner import extract_usage
+    output = {
+        "model": "claude-sonnet-4",
+        "usage": {
+            "input_tokens": "5000",
+            "output_tokens": "2000",
+        },
+    }
+    result = extract_usage(output)
+    assert result["input_tokens"] == 5000
+    assert result["output_tokens"] == 2000
+    assert result["estimated_cost_usd"] is not None
+
+
+def test_extract_usage_garbage_token_values_returns_none():
+    """If token counts are completely unparseable, fall back to None."""
+    from app.services.claude_runner import extract_usage
+    output = {
+        "usage": {
+            "input_tokens": "garbage",
+            "output_tokens": [],
+        },
+    }
+    result = extract_usage(output)
+    assert result["input_tokens"] is None
+    assert result["output_tokens"] is None
+    assert result["estimated_cost_usd"] is None

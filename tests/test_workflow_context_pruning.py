@@ -22,7 +22,11 @@ import json
 import pytest
 
 from app.models.workflow import StepDefinition
-from app.services.workflow_service import _prune_context, _render_prompt
+from app.services.workflow_service import (
+    _prune_context,
+    _render_prompt,
+    _stringify_for_prompt,
+)
 from app.workflows.templates import STARTUP_IDEA_PIPELINE
 from tests.fixtures.startup_pipeline_fixtures import (
     VALID_CONTRARIAN,
@@ -207,3 +211,70 @@ def test_pruning_preserves_full_context_dict_unchanged():
     snapshot = json.dumps(full_ctx, sort_keys=True)
     _prune_context(full_ctx, ["synthesis"])
     assert json.dumps(full_ctx, sort_keys=True) == snapshot
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 4: Bug A regression — dict context values render as JSON, not Python repr
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_stringify_for_prompt_helper_dict():
+    """A dict value is JSON-encoded with indent."""
+    result = _stringify_for_prompt({"rank": 2, "name": "x"})
+    parsed = json.loads(result)
+    assert parsed == {"rank": 2, "name": "x"}
+    # Confirm it's NOT Python repr
+    assert "'rank'" not in result
+
+
+def test_stringify_for_prompt_helper_list():
+    """A list value is JSON-encoded too."""
+    result = _stringify_for_prompt([1, 2, "three"])
+    assert json.loads(result) == [1, 2, "three"]
+
+
+def test_stringify_for_prompt_helper_string_passes_through():
+    """Existing JSON-string outputs (the common case) are unchanged."""
+    payload = '{"final_rankings": []}'
+    assert _stringify_for_prompt(payload) == payload
+
+
+def test_stringify_for_prompt_helper_int():
+    """Plain primitives use str()."""
+    assert _stringify_for_prompt(42) == "42"
+    assert _stringify_for_prompt(None) == "None"
+
+
+def test_render_prompt_json_encodes_dict_context_values():
+    """Round 4 Bug A: when context['selected_idea'] is a dict (as it is
+    after Round 3's context_overrides), the rendered prompt must contain
+    valid JSON, NOT Python repr like ``{'rank': 2}``."""
+    template = "build for: {selected_idea}"
+    selected = {"rank": 2, "name": "second idea", "mvp_spec": {"tech_stack": "Python"}}
+    rendered = _render_prompt(template, {"selected_idea": selected})
+
+    # Extract the JSON portion and parse it — must succeed
+    json_part = rendered.replace("build for: ", "", 1)
+    parsed = json.loads(json_part)
+    assert parsed == selected
+    # And must NOT be Python repr (single quotes)
+    assert "'rank'" not in rendered
+    assert "'name'" not in rendered
+
+
+def test_render_prompt_json_encodes_list_context_values():
+    """Lists in context (e.g. a list of selected items) get JSON-encoded too."""
+    template = "items: {items}"
+    rendered = _render_prompt(template, {"items": ["a", "b", "c"]})
+    json_part = rendered.replace("items: ", "", 1)
+    assert json.loads(json_part) == ["a", "b", "c"]
+
+
+def test_render_prompt_string_context_values_unchanged():
+    """Backward compat: existing JSON-string step outputs render as-is."""
+    payload = '{"final_rankings": [{"rank": 1}]}'
+    template = "synthesis: {synthesis}"
+    rendered = _render_prompt(template, {"synthesis": payload})
+    assert payload in rendered
+    # The string should appear literally, not double-encoded
+    assert rendered.count('"final_rankings"') == 1

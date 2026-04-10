@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -63,12 +65,51 @@ async def execute_builder_job(session: AsyncSession, job: JobRow) -> None:
         )
 
         prompt = build_builder_prompt(job.prompt)
+
+        # Round 4: throttled streaming progress callback (mirrors research.py).
+        # Builders take longer than research jobs and benefit even more from
+        # live visibility — the user can watch token consumption tick up
+        # while Claude installs deps and writes files.
+        progress_state = {"last_update": 0.0}
+
+        async def progress_cb(snapshot: dict) -> None:
+            now = time.monotonic()
+            if now - progress_state["last_update"] < 5.0:
+                return
+            progress_state["last_update"] = now
+            chars = snapshot.get("accumulated_chars", 0)
+            usage = snapshot.get("usage") or {}
+            model = snapshot.get("model")
+            output_tokens = usage.get("output_tokens", 0) if isinstance(usage, dict) else 0
+            try:
+                await update_job_progress(
+                    session,
+                    job.id,
+                    progress_message=(
+                        f"Building ({chars:,} chars, {output_tokens} tokens out)"
+                    ),
+                )
+                if usage:
+                    partial = extract_usage({"usage": usage, "model": model})
+                    if partial["input_tokens"] is not None:
+                        await session.execute(
+                            update(JobRow).where(JobRow.id == job.id).values(
+                                tokens_input=partial["input_tokens"],
+                                tokens_output=partial["output_tokens"],
+                                estimated_cost_usd=partial["estimated_cost_usd"],
+                            )
+                        )
+                        await session.commit()
+            except Exception:
+                logger.exception("builder progress_cb failed; continuing")
+
         result = await run_claude(
             prompt,
             cwd=workspace_path,
             timeout=timeout_override or settings.builder_timeout_seconds,
             allow_permissions=True,
             model=settings.builder_model,
+            on_progress=progress_cb,
         )
 
         # Step 3: Scan workspace for created artifacts

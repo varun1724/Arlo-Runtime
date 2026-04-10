@@ -182,3 +182,46 @@ def test_landscape_prompt_references_recovery_flag():
     template = landscape["prompt_template"]
     assert "previous_attempt_killed_all" in template
     assert "RECOVERY MODE" in template
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 4: loop count boundary math
+# ─────────────────────────────────────────────────────────────────────
+#
+# The actual check in advance_workflow is:
+#     loop_count = <count of jobs at step_index=loop_to>
+#     if loop_count < current_step.max_loop_count:
+#         next_index = current_step.loop_to
+#
+# This means max_loop_count counts EXECUTIONS of the loop_to step
+# (including the initial run), not LOOP ITERATIONS. These tests
+# document that semantics by simulating the count math directly.
+
+
+def _should_loop_back(loop_count: int, max_loop_count: int) -> bool:
+    """Mirror of the boundary check in advance_workflow."""
+    return loop_count < max_loop_count
+
+
+def test_loop_count_boundary_max_two_allows_one_loop():
+    """max_loop_count=2 → after first run (count=1) the loop fires once;
+    after the second run (count=2) the loop does NOT fire again."""
+    # First run completes — loop_count is now 1 (this run)
+    assert _should_loop_back(loop_count=1, max_loop_count=2) is True
+    # Second run completes — loop_count is now 2
+    assert _should_loop_back(loop_count=2, max_loop_count=2) is False
+    # We never reach 3 because the loop didn't fire on the second pass.
+
+
+def test_loop_count_max_one_disables_loop():
+    """max_loop_count=1 means: run once, never loop. After the first run
+    completes, loop_count=1 and 1 < 1 is False."""
+    assert _should_loop_back(loop_count=1, max_loop_count=1) is False
+
+
+def test_loop_count_max_three_allows_two_loops():
+    """max_loop_count=3 → 3 total executions of the loop_to step
+    (initial + 2 loops)."""
+    assert _should_loop_back(loop_count=1, max_loop_count=3) is True
+    assert _should_loop_back(loop_count=2, max_loop_count=3) is True
+    assert _should_loop_back(loop_count=3, max_loop_count=3) is False

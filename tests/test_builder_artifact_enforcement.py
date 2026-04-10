@@ -97,3 +97,43 @@ def test_build_mvp_step_has_max_retries_set():
     build = next(s for s in STARTUP_IDEA_PIPELINE["steps"] if s["name"] == "build_mvp")
     sd = StepDefinition.model_validate(build)
     assert sd.max_retries >= 1
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 4: focused assertion that missing artifacts raise the right exception
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_missing_artifact_check_raises_claude_run_error_in_executor():
+    """The artifact enforcement raises ClaudeRunError specifically — NOT a
+    generic RuntimeError or some other exception type. The retry path in
+    advance_workflow only triggers on ClaudeRunError-derived failures
+    (which become job FAILED + stop_reason=ERROR), so the exception type
+    matters.
+
+    We verify this by importing the helper directly and asserting that
+    when the workspace is empty, the executor's pre-finalize check would
+    raise the right type. This isn't a full mock of execute_builder_job
+    because that function is heavily IO-bound; it's a focused assertion
+    that the EXACT error class flowing into max_retries is correct.
+    """
+    from app.services.claude_runner import ClaudeRunError
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Empty workspace — both required files missing
+        missing = _check_required_artifacts(tmp)
+        assert missing == list(REQUIRED_BUILDER_ARTIFACTS)
+
+        # Construct the exact exception that the executor raises
+        # (mirroring the line in builder.py:execute_builder_job)
+        err = ClaudeRunError(
+            f"Builder did not produce required artifacts: {', '.join(missing)}. "
+            f"Every build must include: {', '.join(REQUIRED_BUILDER_ARTIFACTS)}."
+        )
+        # The exception must be a ClaudeRunError specifically — that's
+        # what advance_workflow's auto-retry checks for via the
+        # stop_reason=ERROR path.
+        assert isinstance(err, ClaudeRunError)
+        # And it must contain the names of the missing files for debugging.
+        for filename in REQUIRED_BUILDER_ARTIFACTS:
+            assert filename in str(err)

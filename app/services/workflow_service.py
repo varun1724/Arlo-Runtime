@@ -539,20 +539,40 @@ def _prune_context(context: dict, context_inputs: list[str] | None) -> dict:
     return {k: context[k] for k in context_inputs if k in context}
 
 
+def _stringify_for_prompt(value) -> str:
+    """Convert a context value to a prompt-safe string.
+
+    Round 4 bug fix: Existing step outputs are JSON strings (from
+    ``result_data``) and pass through ``str()`` unchanged. But Round 3's
+    ``selected_idea`` injects raw dicts via ``context_overrides``, which
+    would render as Python repr (``{'k': 'v'}``) if we naively str()'d
+    them — invalid JSON, breaking downstream parsing in build_mvp.
+
+    JSON-encode dicts and lists so the prompt receives valid JSON in
+    both cases. Strings, ints, and other primitives pass through str().
+    """
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, indent=2)
+    return str(value)
+
+
 def _render_prompt(template: str, context: dict) -> str:
     """Render a prompt template with workflow context.
 
     Uses str.format_map with a defaultdict fallback so missing keys
     render as {key_name} instead of raising KeyError.
     """
-    safe_context = defaultdict(lambda: "{unknown}", {k: str(v) for k, v in context.items()})
+    safe_context = defaultdict(
+        lambda: "{unknown}",
+        {k: _stringify_for_prompt(v) for k, v in context.items()},
+    )
     try:
         return template.format_map(safe_context)
     except (KeyError, ValueError, IndexError):
         # If format_map fails for any reason, return template with what we can substitute
         result = template
         for key, value in context.items():
-            result = result.replace(f"{{{key}}}", str(value))
+            result = result.replace(f"{{{key}}}", _stringify_for_prompt(value))
         return result
 
 

@@ -43,7 +43,7 @@ idx = d.get('current_step_index', 0)
 print(steps[idx]['name'] if idx < len(steps) else 'done')
 ")
 
-  # Get latest job progress
+  # Get latest job progress (Round 4: also includes live token/cost data)
   JOBS_RESPONSE=$(curl -s "$BASE/workflows/$WORKFLOW_ID/jobs" -H "Authorization: Bearer $TOKEN")
   LATEST_JOB_STATUS=$(echo "$JOBS_RESPONSE" | python3 -c "
 import sys,json
@@ -51,7 +51,19 @@ d = json.load(sys.stdin)
 jobs = d.get('jobs', [])
 if jobs:
     j = jobs[-1]
-    print(f\"{j['status']} — {j.get('progress_message','')}\")
+    base = f\"{j['status']} — {j.get('progress_message','')}\"
+    tin = j.get('tokens_input')
+    tout = j.get('tokens_output')
+    cost = j.get('estimated_cost_usd')
+    if tin or tout or cost:
+        parts = []
+        if tin is not None and tout is not None:
+            parts.append(f\"{tin:,} in / {tout:,} out\")
+        if cost is not None:
+            parts.append(f'\${cost:.4f}')
+        if parts:
+            base += ' | ' + ' '.join(parts)
+    print(base)
 else:
     print('no jobs yet')
 ")
