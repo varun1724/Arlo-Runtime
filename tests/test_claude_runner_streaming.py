@@ -286,3 +286,77 @@ async def test_streaming_respects_timeout_on_slow_lines():
             await _run_claude_streaming(
                 ["claude"], cwd=None, timeout=1, on_progress=None,
             )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 5: tool_use / tool_result event handling
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_use_event_populates_tool_activity():
+    """A top-level tool_use event should set tool_activity in snapshots."""
+    snapshots: list[dict] = []
+
+    async def progress_cb(snap: dict) -> None:
+        snapshots.append(dict(snap))
+
+    events = [
+        _line({"type": "system", "subtype": "init", "model": "claude-sonnet-4"}),
+        _line({"type": "tool_use", "name": "WebSearch"}),
+        _line({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "found it"}]},
+        }),
+        _line({"type": "result", "result": "found it",
+               "usage": {"input_tokens": 1, "output_tokens": 1}}),
+    ]
+    fake = _FakeProcess(events)
+
+    async def fake_create(*args, **kwargs):
+        return fake
+
+    with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
+        await _run_claude_streaming(
+            ["claude"], cwd=None, timeout=5, on_progress=progress_cb,
+        )
+
+    # After the tool_use event, the snapshot should report the activity
+    activities = [s.get("tool_activity") for s in snapshots]
+    assert "Using WebSearch" in activities
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_result_clears_tool_activity():
+    """tool_result should clear the activity marker (back to text generation)."""
+    snapshots: list[dict] = []
+
+    async def progress_cb(snap: dict) -> None:
+        snapshots.append(dict(snap))
+
+    events = [
+        _line({"type": "system", "subtype": "init", "model": "claude-sonnet-4"}),
+        _line({"type": "tool_use", "name": "WebSearch"}),
+        _line({"type": "tool_result"}),
+        _line({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "done"}]},
+        }),
+        _line({"type": "result", "result": "done",
+               "usage": {"input_tokens": 1, "output_tokens": 1}}),
+    ]
+    fake = _FakeProcess(events)
+
+    async def fake_create(*args, **kwargs):
+        return fake
+
+    with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
+        await _run_claude_streaming(
+            ["claude"], cwd=None, timeout=5, on_progress=progress_cb,
+        )
+
+    # The last snapshot (after assistant text following tool_result) should have None
+    assert snapshots[-1].get("tool_activity") is None
+    # But there was a moment when tool_activity was set
+    activities = [s.get("tool_activity") for s in snapshots]
+    assert "Using WebSearch" in activities

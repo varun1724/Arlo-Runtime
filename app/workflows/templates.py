@@ -1,5 +1,40 @@
 """Predefined workflow templates."""
 
+from __future__ import annotations
+
+from copy import deepcopy
+
+
+def _apply_deep_research_mode(
+    steps: list[dict], initial_context: dict
+) -> tuple[list[dict], dict]:
+    """Round 5: mutate template steps for Claude Max deep-research runs.
+
+    Called by ``create_workflow_from_template`` in
+    ``app/api/workflow_routes.py`` when the request sets
+    ``deep_research_mode=True``. Returns a new (steps, context) tuple
+    without modifying the inputs.
+
+    What changes:
+    - ``contrarian_analysis.max_loop_count`` is bumped from 2 to 4 so
+      the recovery loop can make more attempts when contrarian kills
+      too many ideas.
+    - ``landscape_scan.timeout_override`` is bumped from 900s to 1800s
+      so the deeper landscape scan has room to breathe.
+    - ``deep_mode="true"`` is injected into ``initial_context`` so the
+      prompts that check for this key can broaden their search scope.
+    """
+    new_steps = deepcopy(steps)
+    for step in new_steps:
+        name = step.get("name")
+        if name == "contrarian_analysis":
+            step["max_loop_count"] = 4  # was 2
+        elif name == "landscape_scan":
+            step["timeout_override"] = 1800  # was 900
+    new_context = {**initial_context, "deep_mode": "true"}
+    return new_steps, new_context
+
+
 STARTUP_IDEA_PIPELINE = {
     "template_id": "startup_idea_pipeline",
     "name": "Startup Idea Pipeline (Deep Research)",
@@ -18,7 +53,12 @@ STARTUP_IDEA_PIPELINE = {
                 "the {domain} market. Your goal is to surface ideas that 90% of researchers would miss.\n\n"
                 "Focus areas: {focus_areas}\n"
                 "Constraints: {constraints}\n"
-                "Previous attempt killed all ideas: {previous_attempt_killed_all}\n\n"
+                "Previous attempt killed all ideas: {previous_attempt_killed_all}\n"
+                "Deep research mode: {deep_mode}\n\n"
+                "DEEP RESEARCH MODE: If 'Deep research mode' is 'true', the user is on a "
+                "Claude Max subscription and wants a more thorough pass. Aim for the HIGH END "
+                "of every count below (15-20 opportunities instead of 10-15), lean more heavily "
+                "on contrarian sources, and don't pull punches on depth.\n\n"
                 "RECOVERY MODE: If 'Previous attempt killed all ideas' is 'true', this is a "
                 "looped retry. The earlier landscape was too narrow and the contrarian step rejected "
                 "every opportunity. You MUST broaden the search this time:\n"
@@ -105,6 +145,10 @@ STARTUP_IDEA_PIPELINE = {
                 "You are a senior startup research analyst. You previously conducted a landscape scan "
                 "and identified opportunities. Now go DEEP on the most promising ones.\n\n"
                 "PREVIOUS LANDSCAPE SCAN:\n{landscape}\n\n"
+                "Deep research mode: {deep_mode}\n\n"
+                "DEEP RESEARCH MODE: If 'Deep research mode' is 'true', the user is on Claude Max "
+                "and wants more thorough coverage. Select 10 opportunities instead of 7-8. "
+                "Run more competitor searches per opportunity. Dig deeper on unit economics.\n\n"
                 "INSTRUCTIONS:\n"
                 "1. Select the 7-8 most promising opportunities from the landscape scan. Bias toward "
                 "ones with non_obviousness_check = 'no' (the non-obvious ones).\n\n"
@@ -304,6 +348,10 @@ STARTUP_IDEA_PIPELINE = {
                 "LANDSCAPE:\n{landscape}\n\n"
                 "DEEP DIVE:\n{deep_dive}\n\n"
                 "CONTRARIAN ANALYSIS:\n{contrarian}\n\n"
+                "Deep research mode: {deep_mode}\n\n"
+                "DEEP RESEARCH MODE: If 'Deep research mode' is 'true', the user is on Claude Max. "
+                "Rank 7 opportunities in final_rankings instead of 3-5, and write MVP specs for "
+                "all of them (not just the top 5).\n\n"
                 "INSTRUCTIONS:\n"
                 "1. Only include opportunities that received a 'survives' or 'weakened' verdict.\n"
                 "   Drop anything that was 'killed' in the contrarian analysis.\n\n"

@@ -96,6 +96,14 @@ class CreateWorkflowRequest(BaseModel):
 
 class CreateWorkflowFromTemplateRequest(BaseModel):
     initial_context: dict = Field(default_factory=dict)
+    deep_research_mode: bool = False
+    """Round 5: Claude Max opt-in for more generous research. When true,
+    the pipeline runs with bumped ``max_loop_count`` on the recovery
+    loop, a longer initial landscape timeout, and a ``deep_mode="true"``
+    context variable that the prompts check to broaden their search
+    scope. Default is False — the normal pipeline is unchanged for
+    API-billed users who pay per-token. Recommended ON for users with
+    a Claude Max subscription where token cost is effectively zero."""
 
 
 class ApproveStepRequest(BaseModel):

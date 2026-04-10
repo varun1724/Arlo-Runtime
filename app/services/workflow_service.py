@@ -188,6 +188,9 @@ async def advance_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> Non
         )
         await session.commit()
         logger.warning("Workflow %s failed at step %d after %d attempts", workflow_id, current_index, attempt_count)
+        # Round 5: fire the failure notification (no-op if email not configured)
+        from app.services import notifications
+        await notifications.notify(session, workflow_id, "workflow_failed")
         return
 
     # If the job is not yet succeeded, do nothing (still running or queued)
@@ -256,6 +259,13 @@ async def advance_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> Non
         )
         await session.commit()
         logger.info("Workflow %s completed successfully", workflow_id)
+        # Round 5: if the step that just finished was build_mvp, fire the
+        # build-complete notification so the user gets an email with the
+        # workspace download link. For other terminal successes we just
+        # log — no email — to avoid noise.
+        if current_step.name == "build_mvp":
+            from app.services import notifications
+            await notifications.notify(session, workflow_id, "build_complete")
         return
 
     # Check if next step requires approval
@@ -276,6 +286,11 @@ async def advance_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> Non
             "Workflow %s paused — step %d (%s) requires approval",
             workflow_id, next_index, next_step.name,
         )
+        # Round 5: fire the approval notification hook. The notification
+        # dispatcher renders the synthesis into HTML+PDF and emails the
+        # user with signed approval URLs. No-op if email not configured.
+        from app.services import notifications
+        await notifications.notify(session, workflow_id, "awaiting_approval")
         return
 
     # Create the next job

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import tarfile
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -25,9 +29,16 @@ from app.models.workflow import (
     TERMINAL_WORKFLOW_STATUSES,
 )
 from app.services import workflow_service
-from app.workflows.templates import TEMPLATES
+from app.services.signed_urls import verify_signed_token
+from app.workflows.templates import TEMPLATES, _apply_deep_research_mode
 
 router = APIRouter(prefix="/workflows", tags=["workflows"], dependencies=[Depends(verify_token)])
+
+# Round 5: public signed-URL endpoints (approve-by-link + artifact
+# download). These do NOT go through verify_token — the HMAC signature
+# on the URL is the auth. They live on a separate router so FastAPI's
+# dependency injection doesn't require a bearer header.
+public_router = APIRouter(prefix="/workflows", tags=["workflows-public"])
 
 
 async def _workflow_to_response(row, db: AsyncSession | None = None) -> WorkflowResponse:
@@ -96,11 +107,19 @@ async def create_workflow_from_template(
                 detail=f"Missing required context key: '{key}'. Required: {template['required_context']}",
             )
 
+    # Round 5: apply deep_research_mode modifier before validation. This
+    # mutates step dicts (bumps max_loop_count etc.) and injects the
+    # deep_mode context key without touching the original template.
+    steps_raw = list(template["steps"])
+    initial_context = dict(body.initial_context)
+    if body.deep_research_mode:
+        steps_raw, initial_context = _apply_deep_research_mode(steps_raw, initial_context)
+
     request = CreateWorkflowRequest(
         name=template["name"],
         template_id=template_id,
-        steps=[StepDefinition.model_validate(s) for s in template["steps"]],
-        initial_context=body.initial_context,
+        steps=[StepDefinition.model_validate(s) for s in steps_raw],
+        initial_context=initial_context,
     )
     row = await workflow_service.create_workflow(db, request)
     return await _workflow_to_response(row, db)
@@ -265,3 +284,169 @@ async def stream_workflow(
             await asyncio.sleep(5)
 
     return EventSourceResponse(event_generator())
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 5: public signed-URL endpoints (no bearer auth)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _success_page(message: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arlo — success</title>
+<style>
+  body {{ font-family: -apple-system, sans-serif; background: #f5f5f7; padding: 40px 20px; color: #1a1a1a; }}
+  .card {{ max-width: 480px; margin: 0 auto; background: #fff; padding: 32px; border-radius: 12px;
+           box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: center; }}
+  h1 {{ font-size: 22px; color: #4a6cf7; margin: 0 0 12px 0; }}
+  p {{ font-size: 15px; line-height: 1.5; color: #555; }}
+</style></head><body>
+<div class="card">
+  <h1>✓ Approved</h1>
+  <p>{message}</p>
+</div>
+</body></html>
+"""
+
+
+def _error_page(message: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arlo — error</title>
+<style>
+  body {{ font-family: -apple-system, sans-serif; background: #f5f5f7; padding: 40px 20px; color: #1a1a1a; }}
+  .card {{ max-width: 480px; margin: 0 auto; background: #fff; padding: 32px; border-radius: 12px;
+           box-shadow: 0 1px 3px rgba(0,0,0,0.08); text-align: center; border-top: 4px solid #dc3545; }}
+  h1 {{ font-size: 22px; color: #dc3545; margin: 0 0 12px 0; }}
+  p {{ font-size: 15px; line-height: 1.5; color: #555; }}
+</style></head><body>
+<div class="card">
+  <h1>✗ Error</h1>
+  <p>{message}</p>
+</div>
+</body></html>
+"""
+
+
+@public_router.get("/{workflow_id}/approve-link/{token}", include_in_schema=False)
+async def approve_via_link(
+    workflow_id: uuid.UUID,
+    token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve a workflow via a signed URL (clicked from an email).
+
+    No bearer auth required — the HMAC signature on the token IS the
+    auth. Returns a human-readable HTML page (not JSON) since this is
+    clicked from an email client.
+    """
+    payload = verify_signed_token(token, expected_purpose="approve")
+    if payload is None:
+        return HTMLResponse(
+            _error_page("Invalid or expired approval link."),
+            status_code=401,
+        )
+    if payload.get("wf") != str(workflow_id):
+        return HTMLResponse(
+            _error_page("Token does not match this workflow."),
+            status_code=400,
+        )
+
+    choice = int(payload.get("choice", 0))
+    try:
+        if choice == 0:
+            await workflow_service.approve_step(db, workflow_id, approved=False)
+            return HTMLResponse(
+                _success_page("Skipped. Workflow ended without building."),
+            )
+        # Look up the chosen ranking from the workflow's stored synthesis
+        wf = await workflow_service.get_workflow(db, workflow_id)
+        if wf is None:
+            return HTMLResponse(_error_page("Workflow not found."), status_code=404)
+        ctx = json.loads(wf.context)
+        synthesis_raw = ctx.get("synthesis", "{}")
+        if isinstance(synthesis_raw, str):
+            try:
+                synthesis = json.loads(synthesis_raw)
+            except json.JSONDecodeError:
+                synthesis = {}
+        else:
+            synthesis = synthesis_raw or {}
+        rankings = (synthesis or {}).get("final_rankings") or []
+        selected = next((r for r in rankings if r.get("rank") == choice), None)
+        if selected is None and 1 <= choice <= len(rankings):
+            # Positional fallback if rank numbers don't line up
+            selected = rankings[choice - 1]
+        if selected is None:
+            return HTMLResponse(
+                _error_page(f"Choice #{choice} not found in synthesis."),
+                status_code=400,
+            )
+        await workflow_service.approve_step(
+            db,
+            workflow_id,
+            approved=True,
+            context_overrides={"selected_idea": selected},
+        )
+        idea_name = selected.get("name", f"idea #{choice}")
+        return HTMLResponse(
+            _success_page(
+                f"Building idea #{choice}: <strong>{idea_name}</strong>. "
+                f"You'll get another email when the build is done."
+            ),
+        )
+    except ValueError as e:
+        return HTMLResponse(_error_page(str(e)), status_code=400)
+
+
+@public_router.get("/{workflow_id}/artifacts.tar.gz", include_in_schema=False)
+async def download_workspace(
+    workflow_id: uuid.UUID,
+    token: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream the build_mvp workspace as a gzipped tarball.
+
+    Auth is the signed token in the ``token`` query param (same
+    mechanism as the approve-by-link endpoint, different purpose).
+    The token is minted by the build-complete notification email.
+    """
+    payload = verify_signed_token(token, expected_purpose="artifacts")
+    if payload is None or payload.get("wf") != str(workflow_id):
+        raise HTTPException(status_code=401, detail="Invalid or expired download link")
+
+    # Find the latest job for this workflow that has a workspace_path set
+    jobs = await workflow_service.get_workflow_jobs(db, workflow_id)
+    build_job = None
+    for j in reversed(jobs):
+        if j.workspace_path:
+            build_job = j
+            break
+    if build_job is None or not build_job.workspace_path:
+        raise HTTPException(status_code=404, detail="No build artifacts found for this workflow")
+
+    workspace = Path(build_job.workspace_path)
+    if not workspace.is_dir():
+        raise HTTPException(status_code=404, detail="Workspace directory missing")
+
+    def iter_tar():
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            tar.add(str(workspace), arcname=workspace.name, recursive=True)
+        buf.seek(0)
+        while True:
+            chunk = buf.read(64 * 1024)
+            if not chunk:
+                break
+            yield chunk
+
+    return StreamingResponse(
+        iter_tar(),
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": f'attachment; filename="workflow-{workflow_id}.tar.gz"'
+        },
+    )

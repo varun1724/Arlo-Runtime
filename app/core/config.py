@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     n8n_poll_interval_seconds: int = 5
     n8n_execution_timeout_seconds: int = 600
 
+    # Round 5: email notifications (async approval flow)
+    # When approval_recipient_email is blank, notifications are a no-op.
+    # This is the single opt-in switch for the whole notification system.
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    email_from_address: str = "arlo@localhost"
+    approval_recipient_email: str = ""
+    notification_base_url: str = "http://localhost:8000"
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

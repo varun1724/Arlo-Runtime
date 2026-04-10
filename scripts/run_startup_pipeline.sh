@@ -55,7 +55,7 @@ if jobs:
     tin = j.get('tokens_input')
     tout = j.get('tokens_output')
     cost = j.get('estimated_cost_usd')
-    if tin or tout or cost:
+    if tin is not None or tout is not None or cost is not None:
         parts = []
         if tin is not None and tout is not None:
             parts.append(f\"{tin:,} in / {tout:,} out\")

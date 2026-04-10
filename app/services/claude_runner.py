@@ -269,6 +269,7 @@ async def _run_claude_streaming(
     accumulated_text_parts: list[str] = []
     latest_usage: dict[str, Any] | None = None
     latest_model: str | None = None
+    latest_tool_activity: str | None = None  # Round 5: e.g. "Using WebSearch"
     final_result_event: dict[str, Any] | None = None
     deadline = time.monotonic() + timeout
 
@@ -326,10 +327,33 @@ async def _run_claude_streaming(
                 content = msg.get("content")
                 if isinstance(content, list):
                     for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
+                        if not isinstance(block, dict):
+                            continue
+                        block_type = block.get("type")
+                        if block_type == "text":
                             text = block.get("text")
                             if isinstance(text, str):
                                 accumulated_text_parts.append(text)
+                        elif block_type == "tool_use":
+                            # Round 5: surface tool activity in progress
+                            # messages. Claude's assistant events can
+                            # include tool_use blocks inline (alongside
+                            # text) for WebSearch, Read, etc.
+                            tool_name = block.get("name") or "tool"
+                            latest_tool_activity = f"Using {tool_name}"
+
+            # Round 5: top-level tool_use/tool_result events (some CLI
+            # versions emit them as separate events rather than blocks)
+            if event_type == "tool_use":
+                tool_name = (
+                    event.get("name")
+                    or (msg or {}).get("name")
+                    or "tool"
+                )
+                latest_tool_activity = f"Using {tool_name}"
+            elif event_type == "tool_result":
+                # Back to text generation; clear the tool activity marker
+                latest_tool_activity = None
 
             # The final 'result' event has the canonical full result + usage
             if event_type == "result":
@@ -353,6 +377,7 @@ async def _run_claude_streaming(
                     "accumulated_chars": sum(len(p) for p in accumulated_text_parts),
                     "usage": latest_usage,
                     "model": latest_model,
+                    "tool_activity": latest_tool_activity,  # Round 5
                 }
                 try:
                     await on_progress(snapshot)

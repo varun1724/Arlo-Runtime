@@ -7,6 +7,15 @@ WORKDIR /opt/arlo
 # don't add cwd to sys.path on their own).
 ENV PYTHONPATH=/opt/arlo
 
+# Round 5: weasyprint system dependencies for HTML→PDF rendering of
+# the synthesis report email attachments. ~50MB on the image, one-time.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpango-1.0-0 \
+    libpangoft2-1.0-0 \
+    libharfbuzz0b \
+    fontconfig \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies first (layer caching).
 # Include dev extras so pytest is available for `docker compose exec api pytest`.
 COPY pyproject.toml .

@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.routes import router as jobs_router
+from app.api.workflow_routes import public_router as workflows_public_router
 from app.api.workflow_routes import router as workflows_router
 from app.db.base import Base
 from app.db.engine import engine
@@ -22,6 +23,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Arlo Runtime", version="0.1.0", lifespan=lifespan)
 app.include_router(jobs_router)
 app.include_router(workflows_router)
+# Round 5: public signed-URL endpoints (approve-by-link + artifact download)
+app.include_router(workflows_public_router)
 
 
 @app.get("/health")

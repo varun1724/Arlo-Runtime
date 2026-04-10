@@ -435,3 +435,139 @@ async def test_approve_fallback_with_minimal_rank1_dict(client):
         ctx = json.loads(wf.context)
         # Empty dict was injected as selected_idea
         assert ctx.get("selected_idea") == {}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 5: approve-by-link endpoint (signed URL auth, no bearer token)
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_approve_via_link_valid_token_approves_workflow(unauthed_client):
+    """End-to-end: mint a signed token for choice=2, hit the public
+    endpoint without a bearer header, verify the workflow advances
+    with the chosen ranking injected into context."""
+    from sqlalchemy import select
+
+    from app.db.engine import async_session
+    from app.db.models import JobRow, WorkflowRow
+    from app.models.workflow import WorkflowStatus
+    from app.services.signed_urls import sign_token
+    from tests.conftest import settings as _  # noqa: F401 — ensure settings loaded
+
+    # Setup: 3-step workflow with synthesis in context at approval gate.
+    # Use the authed client to create the workflow, then unauthed to hit
+    # the public endpoint (which uses the signed URL for auth).
+    from app.core.config import settings as s
+    from httpx import ASGITransport, AsyncClient
+
+    from app.main import app as _app
+
+    async with AsyncClient(transport=ASGITransport(app=_app), base_url="http://test") as authed:
+        authed.headers["Authorization"] = f"Bearer {s.arlo_auth_token}"
+        workflow_id = await _setup_workflow_with_synthesis(
+            authed,
+            "approve_link_valid",
+            {
+                "final_rankings": [
+                    {"rank": 1, "name": "alpha idea", "one_liner": "a"},
+                    {"rank": 2, "name": "beta idea", "one_liner": "b"},
+                    {"rank": 3, "name": "gamma idea", "one_liner": "c"},
+                ],
+                "executive_summary": "test",
+            },
+        )
+
+    # Mint a signed token for choice=2 (beta idea)
+    token = sign_token(workflow_id, "approve", choice=2)
+
+    # Hit the public endpoint WITHOUT bearer auth
+    r = await unauthed_client.get(
+        f"/workflows/{workflow_id}/approve-link/{token}",
+    )
+    assert r.status_code == 200, r.text
+    # Response is HTML, not JSON
+    assert r.headers["content-type"].startswith("text/html")
+    assert "Approved" in r.text or "approved" in r.text.lower()
+    assert "beta idea" in r.text
+
+    # Verify the workflow context has selected_idea=beta idea
+    async with async_session() as session:
+        wf = await session.get(WorkflowRow, workflow_id)
+        assert wf.status == WorkflowStatus.RUNNING.value
+        ctx = json.loads(wf.context)
+        assert ctx["selected_idea"]["name"] == "beta idea"
+
+
+@pytest.mark.asyncio
+async def test_approve_via_link_invalid_token_returns_401(unauthed_client):
+    """A garbage token returns 401 with an HTML error page."""
+    workflow_id = uuid.uuid4()
+    r = await unauthed_client.get(
+        f"/workflows/{workflow_id}/approve-link/not.a.real.token",
+    )
+    assert r.status_code == 401
+    assert r.headers["content-type"].startswith("text/html")
+    assert "Error" in r.text or "Invalid" in r.text
+
+
+@pytest.mark.asyncio
+async def test_approve_via_link_mismatched_workflow_returns_400(unauthed_client):
+    """A token signed for workflow A cannot be used on workflow B."""
+    from app.services.signed_urls import sign_token
+
+    wf_a = uuid.uuid4()
+    wf_b = uuid.uuid4()
+    token = sign_token(wf_a, "approve", choice=1)
+
+    r = await unauthed_client.get(
+        f"/workflows/{wf_b}/approve-link/{token}",
+    )
+    assert r.status_code == 400
+    assert "does not match" in r.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_approve_via_link_choice_zero_skips(unauthed_client):
+    """choice=0 skips the build step without approving an idea."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.core.config import settings as s
+    from app.main import app as _app
+    from app.services.signed_urls import sign_token
+
+    async with AsyncClient(transport=ASGITransport(app=_app), base_url="http://test") as authed:
+        authed.headers["Authorization"] = f"Bearer {s.arlo_auth_token}"
+        workflow_id = await _setup_workflow_with_synthesis(
+            authed,
+            "approve_link_skip",
+            {
+                "final_rankings": [
+                    {"rank": 1, "name": "x", "one_liner": "x"},
+                    {"rank": 2, "name": "y", "one_liner": "y"},
+                    {"rank": 3, "name": "z", "one_liner": "z"},
+                ],
+                "executive_summary": "test",
+            },
+        )
+
+    skip_token = sign_token(workflow_id, "approve", choice=0)
+    r = await unauthed_client.get(
+        f"/workflows/{workflow_id}/approve-link/{skip_token}",
+    )
+    assert r.status_code == 200
+    assert "Skipped" in r.text or "skip" in r.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_approve_via_link_wrong_purpose_token_rejected(unauthed_client):
+    """A token signed for 'artifacts' cannot be used on the approve endpoint."""
+    from app.services.signed_urls import sign_token
+
+    wf = uuid.uuid4()
+    # Sign with the wrong purpose
+    token = sign_token(wf, "artifacts")
+    r = await unauthed_client.get(
+        f"/workflows/{wf}/approve-link/{token}",
+    )
+    assert r.status_code == 401

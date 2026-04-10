@@ -101,13 +101,19 @@ async def execute_research_job(session: AsyncSession, job: JobRow) -> None:
             chars = snapshot.get("accumulated_chars", 0)
             usage = snapshot.get("usage") or {}
             model = snapshot.get("model")
+            tool_activity = snapshot.get("tool_activity")  # Round 5
             output_tokens = usage.get("output_tokens", 0) if isinstance(usage, dict) else 0
+            # Round 5: prepend tool activity (e.g. "Using WebSearch") to
+            # the progress message when present, so the user sees what
+            # Claude is actually doing during long research runs.
+            activity_prefix = f"{tool_activity} — " if tool_activity else ""
             try:
                 await update_job_progress(
                     session,
                     job.id,
                     progress_message=(
-                        f"Streaming output ({chars:,} chars, {output_tokens} tokens out)"
+                        f"{activity_prefix}Streaming output "
+                        f"({chars:,} chars, {output_tokens} tokens out)"
                     ),
                 )
                 if usage:

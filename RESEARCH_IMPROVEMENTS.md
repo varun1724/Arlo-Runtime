@@ -265,9 +265,61 @@ python3 -m pytest \
 3. After approval, inspect the build_mvp job's prompt via psql — the `SELECTED OPPORTUNITY:` block should contain valid JSON (verified parseable), not Python repr with single quotes
 4. Run a build that intentionally omits `BUILD_DECISIONS.md` → confirm the first attempt fails with a `ClaudeRunError` about missing artifacts and the retry kicks in automatically
 
-## Deferred to Round 5
+### Round 5: Async Notifications, Remote Approval, Deep Research Mode
+
+**The motivation:** the user runs everything on a Windows worker via Tailscale and pays nothing-per-token (Claude Max). Round 4's pipeline still required them to babysit a terminal — `run_startup_pipeline.sh` is an interactive polling client that blocks on stdin for the approval choice. Round 5 cuts the laptop tether: kick off a workflow with one curl, walk away, get an emailed PDF with the ranked ideas, click an approval link from your phone, get a second email when the build is done with a tar.gz download link.
+
+**Headline new capability — async notification framework + remote approval:**
+
+- **`app/services/notifications.py`** (NEW) — pluggable dispatcher fired by `advance_workflow` at three transition points: `awaiting_approval`, `build_complete`, `workflow_failed`. Wrapped in try/except so notification failures NEVER break the workflow. Opt-in: a blank `approval_recipient_email` makes it a no-op.
+- **`app/services/email_sender.py`** (NEW) — `aiosmtplib` wrapper, one async function. Builds `multipart/mixed` (with `multipart/alternative` for HTML+text) and supports attachments. STARTTLS by default.
+- **`app/services/report_renderer.py`** (NEW) — `weasyprint`-based renderer. Takes a parsed `SynthesisResult` and a list of `(rank, name, signed_url)` approval links, returns `(html_body, text_fallback, pdf_bytes)`. Inline mobile-friendly CSS, one card per ranking with score breakdown, MVP spec, and a prominent **Build this one →** button. PDF is attached for offline reading on a phone.
+- **`app/services/signed_urls.py`** (NEW) — stateless HMAC-SHA256 signed tokens. Reuses `arlo_auth_token` as the secret (no new secret to rotate). 48-hour TTL. Encodes `{wf, choice, exp, p}` (purpose differentiates `approve` vs `artifacts` so an approval token can't be reused for a workspace download).
+- **`GET /workflows/{id}/approve-link/{token}`** — public endpoint, no bearer auth (the HMAC IS the auth). Verifies signature + expiry + purpose, looks up the chosen ranking from the workflow's stored synthesis, calls `approve_step` with `selected_idea` in `context_overrides`. Returns a small HTML success/error page (clicked from an email client). Mounted on a separate `public_router` so FastAPI's dependency injection doesn't require a header.
+- **`GET /workflows/{id}/artifacts.tar.gz?token=...`** — streams the `build_mvp` job's workspace as a gzipped tarball. Same signed-URL mechanism, different purpose. In-memory tar is fine for typical workspace sizes.
+
+**Headline new capability — deep research mode (Claude Max):**
+
+- **`CreateWorkflowFromTemplateRequest.deep_research_mode: bool = False`** — opt-in flag. When true, `_apply_deep_research_mode` (in `app/workflows/templates.py`) deep-copies the step list, bumps `contrarian_analysis.max_loop_count` from 2 → 4, bumps `landscape_scan.timeout_override` from 900s → 1800s, and injects `deep_mode="true"` into `initial_context`. The landscape, deep_dive, and synthesis prompt templates gained a `{deep_mode}` placeholder + a "DEEP RESEARCH MODE — aim for the high end of each count" instruction block that fires only when the substituted value is `"true"`. Defaults preserve Round 1-4 behavior exactly.
+
+**Round 4 bug sweep (small):**
+
+- **`scripts/run_startup_pipeline.sh`** truthiness bug: `if tin or tout or cost:` was False when any value was zero. Fixed to `is not None`.
+- **Stream-json `tool_use` / `tool_result` events** were silently dropped by Round 4's parser, so the live progress message never reflected "Claude is searching the web." `_run_claude_streaming` now tracks `latest_tool_activity` from both inline assistant blocks and top-level events, and exposes it as `tool_activity` in the on_progress snapshot. `research.py` and `builder.py` prepend it to the progress_message: e.g. `"Using WebSearch — Streaming output (12,453 chars, 3,201 tokens out)"`.
+
+**Settings additions** (`app/core/config.py`): `smtp_host`, `smtp_port`, `smtp_username`, `smtp_password`, `email_from_address`, `approval_recipient_email`, `notification_base_url`. All blank-by-default; setting `approval_recipient_email` is the single switch that turns notifications on.
+
+**Dockerfile changes:** both `Dockerfile.api` and `Dockerfile.worker` now `apt-get install` weasyprint's runtime deps (`libpango-1.0-0`, `libpangoft2-1.0-0`, `libharfbuzz0b`, `fontconfig`). The worker needs them too because `notifications.notify()` fires from `advance_workflow` which runs in the worker process. `pyproject.toml` gains `aiosmtplib>=3.0.0` and `weasyprint>=62.0`.
+
+**Test framework — ~50 new tests:**
+
+| File | Tests | Purpose |
+|---|---|---|
+| `tests/test_signed_urls.py` | **NEW** 12 | HMAC roundtrip, tampered signature/payload, expiry, wrong purpose, malformed token, determinism, choice/wf isolation |
+| `tests/test_email_sender.py` | **NEW** 5 | MIME structure, PDF attachment, STARTTLS, optional credentials, multiple attachments |
+| `tests/test_report_renderer.py` | **NEW** 14 | HTML/text/PDF tuple, every ranking name appears, approval URLs in `href`, PDF magic bytes, plaintext fallback has no tags, missing-cost tolerance, HTML escaping, rankings without rank fields |
+| `tests/test_notifications.py` | **NEW** 10 | Mocked email_sender; opt-in switch (blank recipient = no-op), exception swallowing, all 3 event types, attachments wired |
+| `tests/test_deep_research_mode.py` | **NEW** 11 | Helper bumps loop count + timeout, injects deep_mode, doesn't mutate originals, prompts contain `{deep_mode}` + DEEP RESEARCH MODE marker, request model accepts the flag |
+| `tests/test_workspace_download.py` | **NEW** 5 (DB) | Valid token streams gzip, invalid → 401, missing workspace → 404, no build job → 404 |
+| `tests/test_workflow_approval.py` | +5 (DB) | approve-by-link valid token → builds idea, invalid → 401, mismatched wf → 400, choice=0 skips, wrong purpose rejected |
+| `tests/test_claude_runner_streaming.py` | +2 | tool_use event populates `tool_activity`, tool_result clears it |
+
+**Pending deployment:** commit + push + ssh vsara@100.75.94 + git pull + `docker compose build api worker` (Dockerfile changes affect both containers) + `docker compose up -d api worker`. **No new alembic migration** — signed URLs are stateless, notifications don't persist. Set the SMTP/recipient env vars in `.env` on the Windows machine.
+
+**Manual end-to-end verification (the headline workflow):**
+1. Kick off via curl with `"deep_research_mode": true`
+2. Close laptop, walk away
+3. ~45-60 minutes later: receive an email with the synthesis PDF + inline ranking cards
+4. Click the approval link for the chosen idea on the phone
+5. Browser shows success page; `build_mvp` runs
+6. ~15 minutes later: receive the second email with the tar.gz download link
+7. Download from the phone, inspect — should contain README.md, BUILD_DECISIONS.md, full project
+
+## Deferred to Round 6
 
 - [ ] Evidence verification post-processing (needs a separate Claude call with web search; non-trivial design)
 - [ ] Worker-restart race condition with distributed locking (rare in practice)
 - [ ] Schema versioning v2 path (premature until we actually need to break v1)
+- [ ] iOS Arlo app deep integration (separate project; wait for REST API to stabilize)
+- [ ] Notification HTML template on disk (move from inline string to `templates/emails/approval_gate.html`)
 - [ ] Full CONTRIBUTING.md / WORKFLOW_DESIGN.md guides (the targeted `docs/ADDING_A_TEMPLATE.md` ships in Round 4; broader guides can come later)
