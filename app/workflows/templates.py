@@ -80,7 +80,9 @@ STARTUP_IDEA_PIPELINE = {
                 '}}'
             ),
             "output_key": "landscape",
-            "timeout_override": 1800,
+            "timeout_override": 900,
+            "max_retries": 2,
+            "output_schema": "startup_landscape_v1",
         },
         # ──────────────────────────────────────────────────
         # Step 1: Deep dive on top opportunities
@@ -167,6 +169,8 @@ STARTUP_IDEA_PIPELINE = {
             "output_key": "deep_dive",
             "condition": {"field": "landscape", "operator": "not_empty"},
             "timeout_override": 1800,
+            "max_retries": 2,
+            "output_schema": "startup_deep_dive_v1",
         },
         # ──────────────────────────────────────────────────
         # Step 2: Contrarian analysis — why would these FAIL?
@@ -252,6 +256,8 @@ STARTUP_IDEA_PIPELINE = {
             "output_key": "contrarian",
             "condition": {"field": "deep_dive", "operator": "not_empty"},
             "timeout_override": 1800,
+            "max_retries": 2,
+            "output_schema": "startup_contrarian_v1",
         },
         # ──────────────────────────────────────────────────
         # Step 3: Final synthesis and ranking
@@ -366,7 +372,9 @@ STARTUP_IDEA_PIPELINE = {
             ),
             "output_key": "synthesis",
             "condition": {"field": "contrarian", "operator": "not_empty"},
-            "timeout_override": 1800,
+            "timeout_override": 1200,
+            "max_retries": 2,
+            "output_schema": "startup_synthesis_v1",
         },
         # ──────────────────────────────────────────────────
         # Step 4: User approval gate
@@ -420,6 +428,7 @@ STARTUP_IDEA_PIPELINE = {
             "output_key": "mvp_result",
             "condition": {"field": "synthesis", "operator": "not_empty"},
             "timeout_override": 1200,
+            "context_inputs": ["synthesis"],
         },
     ],
 }

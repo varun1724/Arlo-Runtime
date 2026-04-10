@@ -70,3 +70,35 @@ async def test_get_workflow(client):
 async def test_get_workflow_not_found(client):
     r = await client.get("/workflows/00000000-0000-0000-0000-000000000000")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_startup_pipeline_research_steps_have_output_schemas(client):
+    """Round 2: every research step in startup_idea_pipeline must have
+    an output_schema set, otherwise validation silently degrades."""
+    r = await client.get("/workflows/templates")
+    assert r.status_code == 200
+    pipeline = r.json()["startup_idea_pipeline"]
+
+    research_steps = [s for s in pipeline["steps"] if s["job_type"] == "research"]
+    # The approval gate is also job_type="research" but its prompt_template is a placeholder
+    research_steps = [s for s in research_steps if not s.get("requires_approval", False)]
+
+    for step in research_steps:
+        assert step.get("output_schema") is not None, (
+            f"step {step['name']} is a research step but has no output_schema"
+        )
+        assert step.get("max_retries", 0) > 0, (
+            f"step {step['name']} is a research step but has no auto-retry configured"
+        )
+
+
+@pytest.mark.asyncio
+async def test_startup_pipeline_build_mvp_has_context_inputs(client):
+    """Round 2: build_mvp must prune context to only the synthesis key."""
+    r = await client.get("/workflows/templates")
+    assert r.status_code == 200
+    pipeline = r.json()["startup_idea_pipeline"]
+
+    build_mvp = next(s for s in pipeline["steps"] if s["name"] == "build_mvp")
+    assert build_mvp["context_inputs"] == ["synthesis"]

@@ -40,7 +40,11 @@ class Settings(BaseSettings):
     n8n_poll_interval_seconds: int = 5
     n8n_execution_timeout_seconds: int = 600
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",  # ignore unrelated keys (e.g. docker-compose vars in .env)
+    }
 
 
 settings = Settings()

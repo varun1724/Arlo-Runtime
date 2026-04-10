@@ -165,7 +165,7 @@ async def advance_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> Non
         )
         attempt_count = attempt_count_result.scalar_one()
 
-        if current_step.max_retries > 0 and attempt_count <= current_step.max_retries:
+        if _should_retry_step(current_step.max_retries, attempt_count):
             # Auto-retry: create a new job for the same step
             logger.info(
                 "Workflow %s: auto-retrying step %d (%s), attempt %d/%d",
@@ -418,8 +418,17 @@ async def _create_step_job(
     step: StepDefinition,
     context: dict,
 ) -> None:
-    """Create a job for a workflow step and update workflow state."""
-    prompt = _render_prompt(step.prompt_template, context)
+    """Create a job for a workflow step and update workflow state.
+
+    If ``step.context_inputs`` is set, only those keys are passed to the
+    prompt renderer (the full context is still saved on the workflow row
+    for debugging and approval-step display). This prevents prompt bloat
+    on steps that only need a subset of prior outputs (e.g. ``build_mvp``
+    only needs ``synthesis``, not the full landscape/deep_dive/contrarian
+    chain).
+    """
+    render_context = _prune_context(context, step.context_inputs)
+    prompt = _render_prompt(step.prompt_template, render_context)
 
     job_request = CreateJobRequest(
         job_type=JobType(step.job_type),
@@ -437,6 +446,43 @@ async def _create_step_job(
         )
     )
     await session.commit()
+
+
+def _should_retry_step(max_retries: int, attempt_count: int) -> bool:
+    """Decide whether a failed step should be retried.
+
+    ``attempt_count`` is the number of jobs that already exist for this
+    step (including the just-failed one). ``max_retries`` is the number
+    of *additional* attempts allowed beyond the first try.
+
+    Total allowed attempts = ``max_retries + 1``. So we retry as long as
+    ``attempt_count <= max_retries``. The check ``max_retries > 0`` is
+    redundant when ``attempt_count`` starts at 1 but kept for clarity:
+    a step with ``max_retries=0`` never retries.
+
+    Pure function — no DB or workflow state. Extracted from
+    ``advance_workflow`` so the decision can be unit tested directly.
+    """
+    if max_retries <= 0:
+        return False
+    return attempt_count <= max_retries
+
+
+def _prune_context(context: dict, context_inputs: list[str] | None) -> dict:
+    """Filter a workflow context dict to a whitelist of keys.
+
+    If ``context_inputs`` is None, returns ``context`` unchanged (this is
+    the legacy behavior — every key is passed to the prompt renderer).
+    If it is a list, only the listed keys are included; missing keys are
+    silently dropped (the renderer's ``defaultdict`` fallback then
+    substitutes ``{unknown}`` so the prompt is still well-formed).
+
+    Pure function — no DB or workflow state involved. Extracted from
+    ``_create_step_job`` so it can be unit tested directly.
+    """
+    if context_inputs is None:
+        return context
+    return {k: context[k] for k in context_inputs if k in context}
 
 
 def _render_prompt(template: str, context: dict) -> str:

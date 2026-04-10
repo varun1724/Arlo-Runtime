@@ -3,15 +3,18 @@ from __future__ import annotations
 import json
 import logging
 
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.db.models import JobRow
+from app.db.models import JobRow, WorkflowRow
 from app.jobs.prompts import build_research_prompt
 from app.models.job import JobStatus, JobStopReason
 from app.models.research import ResearchReport
+from app.models.workflow import StepDefinition
 from app.services.claude_runner import ClaudeRunError, ClaudeTimeoutError, run_claude
 from app.services.job_service import finalize_job, update_job_progress
+from app.workflows.schemas import get_schema
 
 logger = logging.getLogger("arlo.jobs.research")
 
@@ -36,6 +39,15 @@ async def execute_research_job(session: AsyncSession, job: JobRow) -> None:
         else:
             prompt = build_research_prompt(job.prompt)
 
+        # Resolve the output schema for this step (if any)
+        schema_cls: type[BaseModel] | None = None
+        timeout_override: int | None = None
+        if is_workflow_job:
+            step = await _load_step_definition(session, job)
+            if step is not None:
+                schema_cls = get_schema(step.output_schema)
+                timeout_override = step.timeout_override
+
         # Step 2: Run Claude Code
         await update_job_progress(
             session,
@@ -45,7 +57,12 @@ async def execute_research_job(session: AsyncSession, job: JobRow) -> None:
             iteration_count=2,
         )
 
-        result = await run_claude(prompt, allow_permissions=True, model=settings.research_model)
+        result = await run_claude(
+            prompt,
+            allow_permissions=True,
+            model=settings.research_model,
+            timeout=timeout_override,
+        )
 
         # Step 3: Parse and store
         await update_job_progress(
@@ -56,7 +73,7 @@ async def execute_research_job(session: AsyncSession, job: JobRow) -> None:
             iteration_count=3,
         )
 
-        result_json, preview = _extract_result(result, is_workflow_job)
+        result_json, preview = _extract_result(result, is_workflow_job, schema_cls)
 
         await finalize_job(
             session,
@@ -98,14 +115,31 @@ async def execute_research_job(session: AsyncSession, job: JobRow) -> None:
         )
 
 
-def _extract_result(claude_output: dict, raw_mode: bool) -> tuple[str, str]:
+def _extract_result(
+    claude_output: dict,
+    raw_mode: bool,
+    schema_cls: type[BaseModel] | None = None,
+) -> tuple[str, str]:
     """Extract result JSON and preview from Claude output.
 
-    In raw_mode (workflow jobs), stores whatever JSON Claude returns without
-    validating against ResearchReport schema. For standalone research jobs,
-    validates against ResearchReport.
+    Three modes (in order of strictness):
 
-    Returns (result_json_string, preview_string).
+    1. **Strict workflow mode** (``raw_mode=True``, ``schema_cls`` set): JSON
+       must parse AND must validate against ``schema_cls``. Either failure
+       raises ``ClaudeRunError``, which the caller maps to a job FAILED with
+       ``stop_reason=ERROR``. The workflow's ``max_retries`` then retries.
+       The stored JSON is the *normalized* dump of the validated model so
+       downstream steps see clean input.
+
+    2. **Loose workflow mode** (``raw_mode=True``, ``schema_cls=None``):
+       Legacy behavior for templates that haven't opted into validation.
+       JSON parse failures fall back to storing the raw cleaned string.
+
+    3. **Standalone mode** (``raw_mode=False``): Validates against
+       ``ResearchReport`` (the original standalone schema). Used by
+       non-workflow research jobs.
+
+    Returns ``(result_json_string, preview_string)``.
     """
     content = claude_output.get("result", claude_output)
 
@@ -121,19 +155,75 @@ def _extract_result(claude_output: dict, raw_mode: bool) -> tuple[str, str]:
 
         try:
             content = json.loads(cleaned)
-        except json.JSONDecodeError:
-            # Store as raw string if not valid JSON
+        except json.JSONDecodeError as e:
+            if raw_mode and schema_cls is not None:
+                # Strict mode: JSON parse failure is a hard error
+                raise ClaudeRunError(
+                    f"Output validation failed: response was not valid JSON ({e}). "
+                    f"First 200 chars: {cleaned[:200]}"
+                ) from e
+            if not raw_mode:
+                # Standalone mode also expects valid JSON for ResearchReport
+                raise ClaudeRunError(
+                    f"Output validation failed: response was not valid JSON ({e}). "
+                    f"First 200 chars: {cleaned[:200]}"
+                ) from e
+            # Loose workflow mode: legacy fallback
             return cleaned, cleaned[:200]
 
     if raw_mode:
-        # Workflow job: store raw JSON, build simple preview
+        if schema_cls is not None:
+            # Strict workflow mode: validate against the registered schema
+            try:
+                model = schema_cls.model_validate(content)
+            except ValidationError as e:
+                raise ClaudeRunError(
+                    f"Output validation failed against {schema_cls.__name__}: {e}"
+                ) from e
+            result_json = model.model_dump_json()
+            preview = _build_raw_preview(model.model_dump())
+            return result_json, preview
+        # Loose workflow mode: store raw JSON, build simple preview
         result_json = json.dumps(content)
         preview = _build_raw_preview(content)
         return result_json, preview
-    else:
-        # Standalone job: validate as ResearchReport
+
+    # Standalone mode: validate as ResearchReport
+    try:
         report = ResearchReport.model_validate(content)
-        return report.model_dump_json(), _build_report_preview(report)
+    except ValidationError as e:
+        raise ClaudeRunError(
+            f"Output validation failed against ResearchReport: {e}"
+        ) from e
+    return report.model_dump_json(), _build_report_preview(report)
+
+
+async def _load_step_definition(
+    session: AsyncSession, job: JobRow
+) -> StepDefinition | None:
+    """Fetch the StepDefinition for a workflow job.
+
+    Returns None if the job is not part of a workflow, the workflow row
+    can't be found, or the step_index is out of range. Failures are
+    intentionally non-fatal — we fall back to legacy loose-mode behavior
+    so a missing definition never blocks job execution.
+    """
+    if job.workflow_id is None or job.step_index is None:
+        return None
+    try:
+        workflow = await session.get(WorkflowRow, job.workflow_id)
+        if workflow is None:
+            return None
+        step_dicts = json.loads(workflow.step_definitions)
+        if job.step_index >= len(step_dicts):
+            return None
+        return StepDefinition.model_validate(step_dicts[job.step_index])
+    except Exception:
+        logger.exception(
+            "Failed to load step definition for job %s (workflow %s, step %s)",
+            job.id, job.workflow_id, job.step_index,
+        )
+        return None
 
 
 def _build_report_preview(report: ResearchReport) -> str:

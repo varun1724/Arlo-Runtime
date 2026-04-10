@@ -42,6 +42,21 @@ class StepDefinition(BaseModel):
     max_loop_count: int | None = None
     requires_approval: bool = False  # if True, workflow pauses before this step
     max_retries: int = 0  # auto-retry this step N times before failing the workflow
+    output_schema: str | None = None
+    """Name of a Pydantic model in app.workflows.schemas.STEP_OUTPUT_SCHEMAS.
+
+    When set on a research step, the job's output JSON is validated against
+    this schema. Validation failures raise ClaudeRunError, which feeds the
+    existing max_retries auto-retry path. Defaults to None for backward
+    compatibility — old templates retain their loose-mode behavior.
+    """
+    context_inputs: list[str] | None = None
+    """Whitelist of context keys to pass when rendering this step's prompt.
+
+    When set, only these keys are passed to the prompt formatter. The full
+    workflow context is still saved to the workflow row for debugging.
+    Defaults to None (= pass all keys, current behavior).
+    """
 
 
 # --- Request models ---
