@@ -496,69 +496,71 @@ def _moats_block(rating: str = "weak") -> dict:
     }
 
 
+# A reusable "rich" ranking that satisfies the Round 3 min_length and
+# total_score >= 20 constraints. Used as the seed for VALID_SYNTHESIS.
+def _rich_ranking(rank: int, name: str, one_liner: str, total: float) -> dict:
+    return {
+        "rank": rank,
+        "name": name,
+        "one_liner": one_liner,
+        "scores": {
+            "market_timing": 8,
+            "defensibility": 5,
+            "solo_dev_feasibility": 9,
+            "revenue_potential": 7,
+            "evidence_quality": 8,
+        },
+        "moats": {
+            "network_effects": {"rating": "none", "justification": "Test quality doesn't compound across users"},
+            "switching_costs": {"rating": "weak", "justification": "Generated tests live in the user's repo"},
+            "data_advantage": {"rating": "weak", "justification": "Could improve generation quality from anonymized usage"},
+            "brand_or_trust": {"rating": "weak", "justification": "Brand matters for code quality tools"},
+            "distribution_lock": {"rating": "none", "justification": "VS Code marketplace is competitive"},
+        },
+        "total_score": total,
+        "head_to_head": "Beats the next-ranked opportunity on solo-dev feasibility and revenue clarity.",
+        "surviving_risks": ["Established competitor could pivot into this niche"],
+        "mvp_spec": {
+            "what_to_build": "CLI tool that scans a project and generates a runnable test suite.",
+            "core_user_journey": "Run the CLI on a Python project with no tests; get a runnable test suite that passes immediately.",
+            "tech_stack": "Python 3.12, Click, hypothesis, Anthropic API",
+            "build_time_weeks": 5,
+            "first_customers": [
+                "Indie Python developers on GitHub with low coverage",
+                "Python data scientists shipping production code",
+                "Solo Django/FastAPI builders",
+            ],
+            "validation_approach": "Pre-launch waitlist with $9/mo deposit, target 30 deposits before building.",
+            "out_of_scope": [
+                "Other languages",
+                "GUI / IDE plugin",
+                "CI integration",
+            ],
+            "success_metric": "100 paying users by month 6, conversion >= 5%.",
+            "risky_assumption": "Solo Python devs care enough about test coverage to pay monthly.",
+        },
+    }
+
+
 VALID_SYNTHESIS: dict = {
     "final_rankings": [
-        {
-            "rank": 1,
-            "name": "AI-generated test suites for Python",
-            "one_liner": "pytest test generator that uses property-based testing for legacy Python codebases",
-            "scores": {
-                "market_timing": 8,
-                "defensibility": 5,
-                "solo_dev_feasibility": 9,
-                "revenue_potential": 7,
-                "evidence_quality": 8,
-            },
-            "moats": {
-                "network_effects": {"rating": "none", "justification": "Test quality doesn't compound across users"},
-                "switching_costs": {"rating": "weak", "justification": "Generated tests live in the user's repo"},
-                "data_advantage": {"rating": "weak", "justification": "Could improve generation quality from anonymized usage"},
-                "brand_or_trust": {"rating": "weak", "justification": "Brand matters for code quality tools"},
-                "distribution_lock": {"rating": "none", "justification": "VS Code marketplace is competitive"},
-            },
-            "total_score": 39.0,
-            "head_to_head": (
-                "Beats #2 because Python is the highest-velocity ecosystem for "
-                "test tooling and the property-based angle is differentiated."
-            ),
-            "surviving_risks": ["Codium could pivot to vertical Python focus"],
-            "mvp_spec": {
-                "what_to_build": "CLI tool: arlo-test generate ./src — outputs pytest files with hypothesis strategies",
-                "core_user_journey": "Run CLI on a Python project with no tests; get a runnable test suite; run pytest and see passing tests",
-                "tech_stack": "Python 3.12, Click, hypothesis, Anthropic API",
-                "build_time_weeks": 5,
-                "first_customers": [
-                    "Indie Python developers on GitHub with low coverage",
-                    "Python data scientists shipping production code",
-                    "Solo Django/FastAPI builders",
-                ],
-                "validation_approach": "Pre-launch waitlist with $9/mo deposit, target 30 deposits before building",
-                "out_of_scope": [
-                    "Other languages",
-                    "GUI / IDE plugin",
-                    "CI integration",
-                ],
-                "success_metric": "100 paying users by month 6",
-                "risky_assumption": "Solo Python devs care enough about test coverage to pay monthly",
-            },
-        },
+        _rich_ranking(1, "AI-generated test suites for Python",
+                      "pytest test generator that uses property-based testing for legacy Python codebases", 39.0),
+        _rich_ranking(2, "AI database migration assistant",
+                      "Generates safe reversible Postgres migrations from natural-language intent.", 33.5),
+        _rich_ranking(3, "PR triage bot for indie OSS",
+                      "Automated PR queue grooming for small open source repositories.", 28.0),
     ],
     "executive_summary": (
-        "After contrarian filtering, only one of three deep-dived opportunities "
-        "fits a solo developer profile: AI-generated Python test suites with a "
-        "property-based testing angle. Market timing is strong (LLM cost collapse), "
-        "feasibility is high (CLI tool, 5 weeks), and the niche is defensible "
-        "enough to bootstrap. The other two opportunities (PR triage, code "
-        "migration) require enterprise sales motions that a solo developer cannot "
-        "credibly run.\n\n"
-        "Recommendation: Build this. Validate paying demand via waitlist deposits "
-        "before writing code. Expect Codium and other incumbents to copy if you "
-        "find traction; lean into community and a vertical reputation."
+        "After contrarian filtering, three opportunities remain viable for a solo "
+        "developer. The top pick combines clear paying demand, strong solo-dev "
+        "feasibility, and modest defensibility through community focus."
     ),
 }
 
 
-def _minimal_synthesis_ranking(rank: int = 1) -> dict:
+def _minimal_synthesis_ranking(rank: int = 1, total: float = 25.0) -> dict:
+    """Smallest legal SynthesisRanking under Round 3 constraints."""
     return {
         "rank": rank,
         "name": "x",
@@ -571,25 +573,27 @@ def _minimal_synthesis_ranking(rank: int = 1) -> dict:
             "evidence_quality": 5,
         },
         "moats": _moats_block(),
-        "total_score": 25.0,
+        "total_score": total,
         "head_to_head": "h",
         "surviving_risks": [],
         "mvp_spec": {
-            "what_to_build": "x",
-            "core_user_journey": "y",
-            "tech_stack": "z",
+            # All free-text fields meet Round 3 min_length constraints.
+            "what_to_build": "Build a small CLI utility.",
+            "core_user_journey": "Run the CLI and see output.",
+            "tech_stack": "Python",
             "build_time_weeks": 4,
             "first_customers": ["c1"],
-            "validation_approach": "v",
+            "validation_approach": "Pre-launch landing page.",
             "out_of_scope": ["a"],
-            "success_metric": "m",
-            "risky_assumption": "r",
+            "success_metric": "10 paying users in 90 days.",
+            "risky_assumption": "Users will pay for this small tool.",
         },
     }
 
 
 MINIMAL_SYNTHESIS: dict = {
-    "final_rankings": [_minimal_synthesis_ranking()],
+    # Round 3: bumped to 3 rankings to satisfy SynthesisResult.min_length=3
+    "final_rankings": [_minimal_synthesis_ranking(rank=i + 1) for i in range(3)],
     "executive_summary": "ok",
 }
 
@@ -600,9 +604,25 @@ INVALID_SYNTHESIS_EMPTY_RANKINGS: dict = {
 }
 
 
+INVALID_SYNTHESIS_TOO_FEW_RANKINGS: dict = {
+    # 2 rankings — below the Round 3 min_length=3 floor
+    "final_rankings": [_minimal_synthesis_ranking(rank=1), _minimal_synthesis_ranking(rank=2)],
+    "executive_summary": "Only two ideas survived contrarian.",
+}
+
+
+INVALID_SYNTHESIS_LOW_TOTAL_SCORE: dict = {
+    # total_score below the Round 3 floor of 20.0
+    "final_rankings": [_minimal_synthesis_ranking(rank=i + 1, total=15.0) for i in range(3)],
+    "executive_summary": "All ideas are weak.",
+}
+
+
 INVALID_SYNTHESIS_OUT_OF_RANGE_SCORE: dict = {
     "final_rankings": [
-        {**_minimal_synthesis_ranking(), "scores": {**_minimal_synthesis_ranking()["scores"], "market_timing": 11}}
+        {**_minimal_synthesis_ranking(rank=i + 1),
+         "scores": {**_minimal_synthesis_ranking()["scores"], "market_timing": 11}}
+        for i in range(3)
     ],
     "executive_summary": "ok",
 }
@@ -611,13 +631,46 @@ INVALID_SYNTHESIS_OUT_OF_RANGE_SCORE: dict = {
 INVALID_SYNTHESIS_MISSING_MVP_FIELD: dict = {
     "final_rankings": [
         {
-            **_minimal_synthesis_ranking(),
+            **_minimal_synthesis_ranking(rank=i + 1),
             "mvp_spec": {
                 k: v
                 for k, v in _minimal_synthesis_ranking()["mvp_spec"].items()
                 if k != "risky_assumption"
             },
         }
+        for i in range(3)
+    ],
+    "executive_summary": "ok",
+}
+
+
+INVALID_SYNTHESIS_SHORT_RISKY_ASSUMPTION: dict = {
+    # risky_assumption too short — Round 3 min_length=15
+    "final_rankings": [
+        {
+            **_minimal_synthesis_ranking(rank=i + 1),
+            "mvp_spec": {
+                **_minimal_synthesis_ranking()["mvp_spec"],
+                "risky_assumption": "yes",
+            },
+        }
+        for i in range(3)
+    ],
+    "executive_summary": "ok",
+}
+
+
+INVALID_SYNTHESIS_SHORT_CORE_USER_JOURNEY: dict = {
+    # core_user_journey too short — Round 3 min_length=20
+    "final_rankings": [
+        {
+            **_minimal_synthesis_ranking(rank=i + 1),
+            "mvp_spec": {
+                **_minimal_synthesis_ranking()["mvp_spec"],
+                "core_user_journey": "click button",
+            },
+        }
+        for i in range(3)
     ],
     "executive_summary": "ok",
 }
@@ -626,12 +679,13 @@ INVALID_SYNTHESIS_MISSING_MVP_FIELD: dict = {
 INVALID_SYNTHESIS_BAD_MOAT_RATING: dict = {
     "final_rankings": [
         {
-            **_minimal_synthesis_ranking(),
+            **_minimal_synthesis_ranking(rank=i + 1),
             "moats": {
                 **_moats_block(),
                 "network_effects": {"rating": "extreme", "justification": "j"},
             },
         }
+        for i in range(3)
     ],
     "executive_summary": "ok",
 }

@@ -109,6 +109,9 @@ def _full_context_with_realistic_payloads() -> dict:
     Step outputs are stored as JSON strings in the database, mirroring
     what ``advance_workflow`` does at line 200:
     ``context[output_key] = completed_job.result_data``.
+
+    Round 3: also includes ``selected_idea`` (the user's pick at the
+    approval gate, injected via ``context_overrides``).
     """
     return {
         "domain": "AI developer tools",
@@ -118,6 +121,7 @@ def _full_context_with_realistic_payloads() -> dict:
         "deep_dive": json.dumps(VALID_DEEP_DIVE),
         "contrarian": json.dumps(VALID_CONTRARIAN),
         "synthesis": json.dumps(VALID_SYNTHESIS),
+        "selected_idea": VALID_SYNTHESIS["final_rankings"][0],
     }
 
 
@@ -127,41 +131,39 @@ def _get_build_mvp_step() -> StepDefinition:
 
 
 def test_build_mvp_step_has_context_inputs_set():
-    """Sanity: the template wiring is in place."""
+    """Round 3: build_mvp now reads selected_idea (user's pick), not full synthesis."""
     step = _get_build_mvp_step()
-    assert step.context_inputs == ["synthesis"]
+    assert step.context_inputs == ["selected_idea"]
 
 
-def test_build_mvp_pruned_prompt_excludes_landscape_and_deep_dive():
+def test_build_mvp_pruned_prompt_excludes_landscape_deep_dive_and_synthesis():
+    """Round 3: build_mvp gets only the user's selected idea, not the entire synthesis."""
     step = _get_build_mvp_step()
     full_ctx = _full_context_with_realistic_payloads()
     pruned = _prune_context(full_ctx, step.context_inputs)
     rendered = _render_prompt(step.prompt_template, pruned)
 
-    # Landscape, deep_dive, and contrarian payloads must not appear
+    # None of the prior step payloads should appear in the rendered prompt
     assert json.dumps(VALID_LANDSCAPE)[:200] not in rendered
     assert json.dumps(VALID_DEEP_DIVE)[:200] not in rendered
     assert json.dumps(VALID_CONTRARIAN)[:200] not in rendered
+    # synthesis is no longer in the prompt — only the selected_idea
+    assert json.dumps(VALID_SYNTHESIS)[:200] not in rendered
 
-    # Synthesis must still be present
-    synthesis_marker = VALID_SYNTHESIS["final_rankings"][0]["one_liner"]
-    assert synthesis_marker in rendered
+    # The selected_idea's distinctive content must be present
+    selected_marker = VALID_SYNTHESIS["final_rankings"][0]["one_liner"]
+    assert selected_marker in rendered
 
 
 def test_build_mvp_unpruned_baseline_includes_everything():
-    """Confirm that without pruning, the bloat is real."""
+    """Confirm that without pruning, every key gets substituted into a fat template."""
     step = _get_build_mvp_step()
     full_ctx = _full_context_with_realistic_payloads()
     unpruned = _render_prompt(step.prompt_template, full_ctx)
 
-    # Synthesis is in the prompt template literally — ignore that.
-    # Look for landscape's distinctive content as proof of bloat.
-    # Note: build_mvp template only references {synthesis}, so
-    # landscape/deep_dive/contrarian aren't substituted into the
-    # prompt body, but they still inflate the rendered context dict
-    # if a future template references them. The test demonstrates
-    # the principle even if build_mvp's current template is already lean.
-    assert "{synthesis}" not in unpruned  # was substituted
+    # selected_idea (the only key build_mvp's template references now) must
+    # be substituted, leaving no {selected_idea} placeholder behind.
+    assert "{selected_idea}" not in unpruned
 
 
 def test_build_mvp_prompt_size_drops_dramatically():

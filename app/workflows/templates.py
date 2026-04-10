@@ -17,7 +17,18 @@ STARTUP_IDEA_PIPELINE = {
                 "You are a senior startup research analyst hunting for NON-OBVIOUS opportunities in "
                 "the {domain} market. Your goal is to surface ideas that 90% of researchers would miss.\n\n"
                 "Focus areas: {focus_areas}\n"
-                "Constraints: {constraints}\n\n"
+                "Constraints: {constraints}\n"
+                "Previous attempt killed all ideas: {previous_attempt_killed_all}\n\n"
+                "RECOVERY MODE: If 'Previous attempt killed all ideas' is 'true', this is a "
+                "looped retry. The earlier landscape was too narrow and the contrarian step rejected "
+                "every opportunity. You MUST broaden the search this time:\n"
+                "- Look at adjacent niches and unconventional angles\n"
+                "- Lean even harder on contrarian sources (Reddit, HN, niche subreddits)\n"
+                "- Lower the bar on 'obviousness' — find opportunities that may not look like winners\n"
+                "  on first read but have a real underlying timing signal\n"
+                "- Avoid the well-known categories that VCs are already chasing\n"
+                "If the value above is '{{unknown}}' or anything other than 'true', this is a fresh "
+                "first attempt — proceed normally.\n\n"
                 "INSTRUCTIONS:\n"
                 "1. Use web search across DIVERSE source types. Don't just read industry reports — "
                 "the best opportunities hide where analysts don't look. Search:\n"
@@ -133,6 +144,16 @@ STARTUP_IDEA_PIPELINE = {
                 "   e) EARLY FAILURE SIGNAL: Find at least ONE specific risk or red flag for each\n"
                 "      opportunity now (don't wait for the contrarian step). What's the most\n"
                 "      concerning thing you noticed during research?\n\n"
+                "   f) FOUNDER/TEAM PATTERNS: For each opportunity, briefly note who founded the\n"
+                "      2-3 best-funded competitors and look for a pattern. Common archetypes:\n"
+                "      - DOMAIN_EXPERT: founders worked in the industry 5+ years before starting\n"
+                "      - TECHNICAL: engineering/research background, sometimes from the relevant\n"
+                "        platform (e.g. ex-Google for cloud tools, ex-Stripe for payments)\n"
+                "      - REPEAT: prior exit or successful previous startup\n"
+                "      - FIRST_TIME: first-time founders, often younger\n"
+                "      - MIXED: a clear blend (e.g. domain expert + technical co-founder)\n"
+                "      Summarize the dominant pattern in 1-2 sentences. This signals which kinds\n"
+                "      of founders are succeeding in this niche, and helps the user judge fit.\n\n"
                 "3. Do NOT skip web search for any opportunity. Each one needs fresh data.\n\n"
                 "QUALITY STANDARDS:\n"
                 "- Name real companies with real funding amounts\n"
@@ -158,6 +179,7 @@ STARTUP_IDEA_PIPELINE = {
                 '        "cac_channel": "string — specific channel",\n'
                 '        "gross_margin_signal": "high|medium|low"\n'
                 '      }},\n'
+                '      "founder_patterns": "string — 1-2 sentence summary of the dominant founder archetype in this niche (DOMAIN_EXPERT, TECHNICAL, REPEAT, FIRST_TIME, or MIXED) and what it implies",\n'
                 '      "early_failure_signal": "string — most concerning red flag noticed during research",\n'
                 '      "evidence_strength": "strong|moderate|weak",\n'
                 '      "initial_assessment": "string — 2-3 sentence preliminary take"\n'
@@ -258,6 +280,17 @@ STARTUP_IDEA_PIPELINE = {
             "timeout_override": 1800,
             "max_retries": 2,
             "output_schema": "startup_contrarian_v1",
+            # Round 3: recovery loop. If contrarian leaves fewer than 3
+            # surviving (verdict in [survives, weakened]) opportunities,
+            # loop back to landscape_scan. The landscape prompt detects
+            # the previous_attempt_killed_all flag and broadens its search.
+            "loop_to": 0,
+            "max_loop_count": 2,
+            "loop_condition": {
+                "field": "contrarian",
+                "operator": "survivor_count_below",
+                "value": "3",
+            },
         },
         # ──────────────────────────────────────────────────
         # Step 3: Final synthesis and ranking
@@ -393,11 +426,12 @@ STARTUP_IDEA_PIPELINE = {
             "name": "build_mvp",
             "job_type": "builder",
             "prompt_template": (
-                "Build an MVP for the TOP-RANKED idea from this startup research synthesis.\n\n"
-                "FINAL SYNTHESIS AND RANKING:\n{synthesis}\n\n"
+                "Build an MVP for the startup opportunity selected by the user.\n\n"
+                "SELECTED OPPORTUNITY:\n{selected_idea}\n\n"
                 "SCOPE RULES — READ CAREFULLY:\n"
-                "1. Build ONLY the rank-1 opportunity. Ignore ranks 2-5 entirely. Do not blend ideas.\n"
-                "2. Use ONLY the rank-1 opportunity's mvp_spec as your specification. In particular:\n"
+                "1. Build EXACTLY the opportunity above. The user has already selected it from a "
+                "ranked list during the approval gate, so do not second-guess the choice.\n"
+                "2. Use ONLY this opportunity's mvp_spec as your specification. In particular:\n"
                 "   - what_to_build → these are your features\n"
                 "   - core_user_journey → this is the ONE workflow that MUST work end-to-end\n"
                 "   - tech_stack → use this stack unless there is a hard technical reason not to\n"
@@ -410,7 +444,7 @@ STARTUP_IDEA_PIPELINE = {
                 "   - NOT a mockup or design file\n"
                 "   - NOT a coming-soon page\n"
                 "   - YES a working app/API/CLI that a real user could use today\n\n"
-                "REQUIREMENTS:\n"
+                "REQUIREMENTS (every file must exist or the build is rejected):\n"
                 "- Complete project with all dependencies installed\n"
                 "- Core features implemented and WORKING (not stubs, not TODOs)\n"
                 "- The core_user_journey from the spec must work end-to-end\n"
@@ -419,7 +453,8 @@ STARTUP_IDEA_PIPELINE = {
                 "- README.md with: what it does, how to set up, how to run, environment variables needed\n"
                 "- Dockerfile for deployment\n"
                 "- .env.example with all required environment variables documented\n"
-                "- BUILD_DECISIONS.md explaining: (a) why you chose the tech stack you used, "
+                "- BUILD_DECISIONS.md (REQUIRED — build is rejected if missing) explaining: "
+                "(a) why you chose the tech stack you used, "
                 "(b) any tradeoffs you made, (c) what you intentionally did NOT build (echo the "
                 "out_of_scope list from the spec), (d) how a future user would test the risky_assumption\n\n"
                 "Make it real. Someone should be able to clone this repo and have a working product "
@@ -428,7 +463,8 @@ STARTUP_IDEA_PIPELINE = {
             "output_key": "mvp_result",
             "condition": {"field": "synthesis", "operator": "not_empty"},
             "timeout_override": 1200,
-            "context_inputs": ["synthesis"],
+            "max_retries": 1,
+            "context_inputs": ["selected_idea"],
         },
     ],
 }

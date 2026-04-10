@@ -138,6 +138,9 @@ class DeepDiveOpportunity(BaseModel):
     market_size_estimates: list[MarketSizeEstimate] = Field(min_length=1)
     demand_signals: list[DemandSignal] = Field(min_length=1)
     unit_economics: UnitEconomics
+    # Round 3: founder/team patterns. Optional because legacy templates and
+    # earlier in-flight workflows don't include it.
+    founder_patterns: str | None = None
     early_failure_signal: str
     evidence_strength: EvidenceStrength
     initial_assessment: str
@@ -253,15 +256,18 @@ class Moats(BaseModel):
 class MvpSpec(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    what_to_build: str
-    core_user_journey: str
-    tech_stack: str
+    # Round 3: tightened min_length on critical free-text fields. The prompt
+    # already asks Claude for substantive answers, but the schema previously
+    # accepted empty strings — letting the builder receive a vague spec.
+    what_to_build: str = Field(min_length=20)
+    core_user_journey: str = Field(min_length=20)
+    tech_stack: str = Field(min_length=3)
     build_time_weeks: int = Field(ge=1)
     first_customers: list[str] = Field(min_length=1)
-    validation_approach: str
+    validation_approach: str = Field(min_length=15)
     out_of_scope: list[str] = Field(min_length=1)
-    success_metric: str
-    risky_assumption: str
+    success_metric: str = Field(min_length=15)
+    risky_assumption: str = Field(min_length=15)
 
 
 class SynthesisRanking(BaseModel):
@@ -272,7 +278,11 @@ class SynthesisRanking(BaseModel):
     one_liner: str
     scores: Scores
     moats: Moats
-    total_score: float
+    # Round 3: enforce a minimum quality bar on the weighted total. The
+    # weighting formula has a theoretical max of 100; 20 is roughly "all
+    # dimensions = 4/10". Anything below that means Claude couldn't find
+    # a real opportunity and should retry rather than display garbage.
+    total_score: float = Field(ge=20.0, le=100.0)
     head_to_head: str
     surviving_risks: list[str] = Field(default_factory=list)
     mvp_spec: MvpSpec
@@ -281,7 +291,10 @@ class SynthesisRanking(BaseModel):
 class SynthesisResult(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    final_rankings: list[SynthesisRanking] = Field(min_length=1)
+    # Round 3: bumped from 1 to 3. The prompt asks for top 5; allowing fewer
+    # than 3 means contrarian killed too many ideas — that should trigger a
+    # retry (or the recovery loop), not a half-empty approval gate.
+    final_rankings: list[SynthesisRanking] = Field(min_length=3)
     executive_summary: str
 
 

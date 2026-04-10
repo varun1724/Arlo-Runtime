@@ -94,3 +94,39 @@ async def test_step_with_requires_approval():
         requires_approval=True,
     )
     assert step.requires_approval is True
+
+
+@pytest.mark.asyncio
+async def test_step_with_loop_condition():
+    """Round 3: loop_to gated by loop_condition (used by contrarian recovery loop)."""
+    step = StepDefinition(
+        name="contrarian",
+        job_type="research",
+        prompt_template="...",
+        output_key="contrarian",
+        loop_to=0,
+        max_loop_count=2,
+        loop_condition=StepCondition(
+            field="contrarian",
+            operator="survivor_count_below",
+            value="3",
+        ),
+    )
+    assert step.loop_to == 0
+    assert step.loop_condition is not None
+    assert step.loop_condition.operator == "survivor_count_below"
+    assert step.loop_condition.value == "3"
+
+
+@pytest.mark.asyncio
+async def test_step_loop_condition_defaults_to_none():
+    """Backward compat: existing templates without loop_condition keep working."""
+    step = StepDefinition(
+        name="x",
+        job_type="research",
+        prompt_template="...",
+        output_key="x",
+        loop_to=1,
+        max_loop_count=10,
+    )
+    assert step.loop_condition is None

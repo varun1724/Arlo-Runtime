@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from app.jobs.research import _extract_result
 from app.services.claude_runner import ClaudeRunError
@@ -194,3 +195,68 @@ def test_standalone_mode_invalid_json_raises():
     output = {"result": "not json"}
     with pytest.raises(ClaudeRunError):
         _extract_result(output, raw_mode=False, schema_cls=None)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 3: friendly validation error helper
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_friendly_error_includes_field_name():
+    """Round 3: ClaudeRunError messages should name the offending field."""
+    output = _claude_output(INVALID_LANDSCAPE_FEW_OPPS)
+    with pytest.raises(ClaudeRunError) as exc:
+        _extract_result(output, raw_mode=True, schema_cls=LandscapeResult)
+    # The friendly error should reference the failing field by name
+    assert "opportunities" in str(exc.value)
+    # And the schema class name (so the user knows which step failed)
+    assert "LandscapeResult" in str(exc.value)
+
+
+def test_friendly_error_is_short_one_liner():
+    """Round 3: friendly error is much shorter than raw Pydantic output."""
+    output = _claude_output(INVALID_LANDSCAPE_FEW_OPPS)
+    try:
+        _extract_result(output, raw_mode=True, schema_cls=LandscapeResult)
+        assert False, "should have raised"
+    except ClaudeRunError as e:
+        msg = str(e)
+        # Should be one line and well under the wall-of-text Pydantic default
+        assert "\n" not in msg
+        assert len(msg) < 300
+
+
+def test_friendly_error_includes_more_count_when_multiple_failures():
+    """When multiple fields fail, the helper notes the additional count."""
+    from app.jobs.research import _friendly_validation_error
+    from pydantic import BaseModel, Field
+
+    class Sample(BaseModel):
+        a: int = Field(ge=10)
+        b: int = Field(ge=10)
+
+    try:
+        Sample.model_validate({"a": 1, "b": 1})
+        assert False, "should have raised"
+    except ValidationError as e:
+        msg = _friendly_validation_error(e)
+        assert "Field 'a'" in msg
+        assert "and 1 more" in msg
+
+
+def test_friendly_error_handles_root_path():
+    """No location info still produces a sensible message."""
+    from pydantic import BaseModel
+
+    from app.jobs.research import _friendly_validation_error
+
+    class Inner(BaseModel):
+        pass
+
+    try:
+        Inner.model_validate("not a dict")
+        assert False, "should have raised"
+    except ValidationError as e:
+        msg = _friendly_validation_error(e)
+        assert msg  # non-empty
+        assert isinstance(msg, str)

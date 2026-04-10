@@ -202,15 +202,32 @@ async def advance_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> Non
     # Determine next step
     next_index = current_index + 1
     if current_step.loop_to is not None and current_step.max_loop_count is not None:
-        # Check how many times we've looped
-        loop_count_result = await session.execute(
-            select(func.count())
-            .select_from(JobRow)
-            .where(JobRow.workflow_id == workflow_id, JobRow.step_index == current_step.loop_to)
+        # Round 3: gate the loop on loop_condition (when set). Without a
+        # loop_condition the existing unconditional behavior is preserved.
+        should_loop = (
+            current_step.loop_condition is None
+            or _evaluate_condition(current_step.loop_condition, context)
         )
-        loop_count = loop_count_result.scalar_one()
-        if loop_count < current_step.max_loop_count:
-            next_index = current_step.loop_to
+        if should_loop:
+            # Check how many times we've looped
+            loop_count_result = await session.execute(
+                select(func.count())
+                .select_from(JobRow)
+                .where(JobRow.workflow_id == workflow_id, JobRow.step_index == current_step.loop_to)
+            )
+            loop_count = loop_count_result.scalar_one()
+            if loop_count < current_step.max_loop_count:
+                next_index = current_step.loop_to
+                # Inject a flag so the looped-back step knows it's a retry
+                # (used by landscape_scan to broaden its search). Stored as
+                # the literal string "true" because context values are
+                # rendered with str() — keeping this consistent with how
+                # JSON-string outputs are stored.
+                context["previous_attempt_killed_all"] = "true"
+                logger.info(
+                    "Workflow %s: loop_condition fired, looping step %d -> %d",
+                    workflow_id, current_index, current_step.loop_to,
+                )
 
     # Skip steps whose conditions fail
     while next_index < len(step_defs):
@@ -300,6 +317,35 @@ async def approve_step(
     if approved:
         # Create the job and resume
         current_step = step_defs[current_index]
+
+        # Defensive fallback: if the next step needs `selected_idea` (via
+        # context_inputs) but the caller didn't provide one in context_overrides,
+        # default to the rank-1 entry from the prior synthesis. This keeps direct
+        # API callers (and old scripts) working without forcing them to pick.
+        if (
+            current_step.context_inputs is not None
+            and "selected_idea" in current_step.context_inputs
+            and "selected_idea" not in context
+        ):
+            try:
+                synthesis_raw = context.get("synthesis")
+                synthesis_dict = (
+                    json.loads(synthesis_raw)
+                    if isinstance(synthesis_raw, str)
+                    else synthesis_raw
+                )
+                rankings = (synthesis_dict or {}).get("final_rankings") or []
+                if rankings:
+                    context["selected_idea"] = rankings[0]
+                    logger.info(
+                        "Workflow %s: no selected_idea provided, defaulting to rank-1",
+                        workflow_id,
+                    )
+            except (json.JSONDecodeError, TypeError, KeyError):
+                logger.warning(
+                    "Workflow %s: could not extract default selected_idea from synthesis",
+                    workflow_id,
+                )
         await session.execute(
             update(WorkflowRow)
             .where(WorkflowRow.id == workflow_id)
@@ -514,6 +560,51 @@ def _evaluate_condition(condition: StepCondition, context: dict) -> bool:
         return condition.value is not None and condition.value in str(value or "")
     elif condition.operator == "equals":
         return str(value) == str(condition.value)
+    elif condition.operator == "survivor_count_below":
+        # Round 3: Used by contrarian_analysis loop_condition. Counts the
+        # opportunities in `contrarian_analyses` whose verdict is NOT 'killed'
+        # and returns True when the count is below the threshold (a string
+        # representation of an integer in `value`).
+        try:
+            threshold = int(condition.value or "0")
+        except (TypeError, ValueError):
+            logger.warning(
+                "survivor_count_below: invalid threshold %r", condition.value
+            )
+            return False
+        survivors = _count_survivors(value)
+        result = survivors < threshold
+        logger.info(
+            "survivor_count_below: counted %d survivors (threshold %d, fires=%s)",
+            survivors, threshold, result,
+        )
+        return result
     else:
         logger.warning("Unknown condition operator: %s", condition.operator)
         return True  # unknown operators pass by default
+
+
+def _count_survivors(contrarian_value) -> int:
+    """Count opportunities in a contrarian output whose verdict is not 'killed'.
+
+    The value may be a JSON string (the on-disk format used by
+    ``advance_workflow``) or already a parsed dict. Both forms are supported.
+    Returns 0 on any parsing error.
+    """
+    if contrarian_value is None:
+        return 0
+    if isinstance(contrarian_value, str):
+        try:
+            contrarian_value = json.loads(contrarian_value)
+        except (json.JSONDecodeError, TypeError):
+            return 0
+    if not isinstance(contrarian_value, dict):
+        return 0
+    analyses = contrarian_value.get("contrarian_analyses") or []
+    if not isinstance(analyses, list):
+        return 0
+    return sum(
+        1
+        for a in analyses
+        if isinstance(a, dict) and a.get("verdict") in ("survives", "weakened")
+    )

@@ -75,6 +75,18 @@ import sys, json
 d = json.load(sys.stdin)
 ctx = d.get('context', {})
 
+# Round 3: show cost so far before the user picks
+cost = d.get('total_estimated_cost_usd')
+tin = d.get('total_tokens_input')
+tout = d.get('total_tokens_output')
+if cost is not None or tin is not None:
+    print('--- Research Cost So Far ---')
+    if cost is not None:
+        print(f'  Estimated USD: \${cost:.4f}')
+    if tin is not None and tout is not None:
+        print(f'  Tokens: {tin:,} in / {tout:,} out')
+    print()
+
 # Parse synthesis
 synth_raw = ctx.get('synthesis', '{}')
 try:
@@ -153,12 +165,47 @@ else:
           -d '{"approved": false}' > /dev/null
         echo "Done."
       else
+        # Validate choice is in range and build the context_overrides payload
+        # containing the user's selected ranking. The build_mvp step has
+        # context_inputs=["selected_idea"], so this is what gets passed to the
+        # builder prompt — the user's pick, not always rank-1.
+        OVERRIDE_PAYLOAD=$(echo "$RESPONSE" | CHOICE="$CHOICE" python3 -c "
+import sys, json, os
+choice = int(os.environ['CHOICE'])
+d = json.load(sys.stdin)
+ctx = d.get('context', {})
+synth_raw = ctx.get('synthesis', '{}')
+try:
+    synth = json.loads(synth_raw) if isinstance(synth_raw, str) else synth_raw
+except Exception:
+    synth = {}
+rankings = synth.get('final_rankings', [])
+if not rankings or choice < 1 or choice > len(rankings):
+    print('INVALID', file=sys.stderr)
+    sys.exit(2)
+# Prefer matching by 'rank' field if present; fall back to position.
+selected = None
+for r in rankings:
+    if r.get('rank') == choice:
+        selected = r
+        break
+if selected is None:
+    selected = rankings[choice - 1]
+print(json.dumps({'approved': True, 'context_overrides': {'selected_idea': selected}}))
+")
+        if [ -z "$OVERRIDE_PAYLOAD" ]; then
+          echo ""
+          echo "Invalid choice #$CHOICE — must be between 1 and $COUNT."
+          echo "Aborting without approval."
+          exit 1
+        fi
+
         echo ""
         echo "Building MVP for choice #$CHOICE..."
         curl -s -X POST "$BASE/workflows/$WORKFLOW_ID/approve" \
           -H "Authorization: Bearer $TOKEN" \
           -H "Content-Type: application/json" \
-          -d '{"approved": true}' > /dev/null
+          -d "$OVERRIDE_PAYLOAD" > /dev/null
         echo "Approved! Building MVP (this may take 10-20 minutes)..."
         echo ""
       fi

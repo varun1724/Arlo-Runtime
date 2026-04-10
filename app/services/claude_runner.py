@@ -3,10 +3,74 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 
 from app.core.config import settings
 
 logger = logging.getLogger("arlo.claude_runner")
+
+
+# Round 3: Per-million-token prices for cost estimation. These are
+# approximate and intentionally conservative — they're for visibility, not
+# billing. Update as Anthropic publishes new pricing.
+# (input_per_mtok_usd, output_per_mtok_usd)
+_MODEL_PRICES_USD_PER_MTOK: dict[str, tuple[float, float]] = {
+    "haiku": (0.80, 4.00),
+    "sonnet": (3.00, 15.00),
+    "opus": (15.00, 75.00),
+}
+_DEFAULT_PRICE = (3.00, 15.00)  # assume sonnet if model is unknown
+
+
+def extract_usage(claude_output: dict[str, Any]) -> dict[str, int | float | None]:
+    """Pull token usage and estimated cost from a Claude CLI JSON result.
+
+    The Claude Code CLI's ``--output-format json`` response includes a
+    ``usage`` block with ``input_tokens``, ``output_tokens``, and (sometimes)
+    cache-related counters. This helper normalizes them and computes a
+    rough USD cost based on the per-model price table above.
+
+    Returns a dict with keys ``input_tokens``, ``output_tokens``,
+    ``estimated_cost_usd``. Any field can be ``None`` if the CLI response
+    didn't include usage data (e.g. older Claude Code versions).
+    """
+    usage = claude_output.get("usage") if isinstance(claude_output, dict) else None
+    if not isinstance(usage, dict):
+        return {"input_tokens": None, "output_tokens": None, "estimated_cost_usd": None}
+
+    input_tokens = usage.get("input_tokens")
+    output_tokens = usage.get("output_tokens")
+
+    # Some Claude CLI versions report cache hits separately. Count them as input.
+    cache_creation = usage.get("cache_creation_input_tokens") or 0
+    cache_read = usage.get("cache_read_input_tokens") or 0
+    if isinstance(input_tokens, int):
+        input_tokens = input_tokens + cache_creation + cache_read
+
+    cost: float | None = None
+    if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+        # Try to identify the model from the result; fall back to default.
+        model_key = _DEFAULT_PRICE
+        model_field = (
+            claude_output.get("model")
+            if isinstance(claude_output, dict) else None
+        )
+        if isinstance(model_field, str):
+            for key, price in _MODEL_PRICES_USD_PER_MTOK.items():
+                if key in model_field.lower():
+                    model_key = price
+                    break
+        in_price, out_price = model_key
+        cost = round(
+            (input_tokens / 1_000_000) * in_price + (output_tokens / 1_000_000) * out_price,
+            6,
+        )
+
+    return {
+        "input_tokens": input_tokens if isinstance(input_tokens, int) else None,
+        "output_tokens": output_tokens if isinstance(output_tokens, int) else None,
+        "estimated_cost_usd": cost,
+    }
 
 
 class ClaudeRunError(Exception):

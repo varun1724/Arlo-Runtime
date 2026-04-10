@@ -70,6 +70,86 @@ python3 -m pytest \
 
 **Pending deployment:** commit + push + ssh vsara@100.75.94 + cd C:\trading\arlo-runtime + git pull + docker compose up -d --build, then `./scripts/run_tests.sh` to run the full suite (including the 3 DB integration tests in `test_workflow_retry.py` and 2 in `test_workflows.py`).
 
+### Round 3: Approval UX, Build Enforcement, Quality Bars, Cost Visibility
+
+A fresh sweep of the pipeline after Round 2 turned up several high-impact bugs that weren't visible in earlier reviews. Round 3 closes the rest of the tracker AND fixes those.
+
+**Headline bug fixed: user can now actually pick a non-#1 idea.** The script previously displayed "Pick an idea [1-N]" but discarded the choice and always built rank-1. Now:
+- `scripts/run_startup_pipeline.sh` parses the user's choice, finds the matching ranking from synthesis, and sends it as `context_overrides.selected_idea` to the approve endpoint
+- `app/workflows/templates.py` build_mvp prompt rewired to read `{selected_idea}` with `context_inputs=["selected_idea"]`
+- `app/services/workflow_service.py` approve_step has a defensive fallback: if a downstream step needs `selected_idea` and the caller didn't supply one, default to rank-1 from prior synthesis (preserves backward compat for direct API callers)
+
+**Builder artifact enforcement.** Round 1 added a `BUILD_DECISIONS.md` requirement to the build_mvp prompt, but `app/jobs/builder.py` only checked for `arlo_manifest.json` — so missing artifacts were silently lost. Now:
+- New `REQUIRED_BUILDER_ARTIFACTS = ("README.md", "BUILD_DECISIONS.md")` constant
+- `_check_required_artifacts` direct-Path scan (avoids the workspace scanner's dotfile filter)
+- Missing artifacts raise `ClaudeRunError`, feeding the workflow's auto-retry path
+- `build_mvp` step now has `max_retries=1` (one retry on missing files; building is expensive)
+- `builder.py` also honors per-step `timeout_override` (mirrors Round 2's research.py plumbing)
+
+**Tighter data-quality validation.** Schemas were too lenient; Claude could produce technically-valid-but-low-quality output. Now:
+- `SynthesisResult.final_rankings` requires `min_length=3` (was 1)
+- `SynthesisRanking.total_score` requires `ge=20.0` (force a retry rather than display garbage)
+- `MvpSpec` field min_lengths: `core_user_journey>=20`, `risky_assumption>=15`, `success_metric>=15`, `validation_approach>=15`, `what_to_build>=20`, `tech_stack>=3`
+- Fixtures updated; new INVALID variants for "too few rankings", "low total_score", "short risky_assumption", "short core_user_journey"
+
+**Friendly validation error messages.** Replaced verbose Pydantic ValidationError dumps with one-line user-facing messages. Added `_friendly_validation_error` helper in `research.py` that extracts the offending field name and the constraint message. Used in both strict-mode workflow validation and standalone ResearchReport validation. Tests assert messages are <300 chars and contain the field name.
+
+**Token/cost tracking** (full plumbing):
+- Three new nullable columns on `JobRow`: `tokens_input`, `tokens_output`, `estimated_cost_usd`
+- Alembic migration `0004_add_token_cost_columns.py`
+- New `extract_usage()` helper in `app/services/claude_runner.py` with per-model price table (haiku/sonnet/opus, conservative pricing)
+- `research.py` and `builder.py` extract usage after each Claude call and pass to `finalize_job`
+- `JobResponse` and `WorkflowResponse` Pydantic models extended with the new fields
+- `_workflow_to_response` aggregates per-job costs into `total_tokens_input/output` and `total_estimated_cost_usd` via SQL `SUM`
+- `run_startup_pipeline.sh` displays "Research cost so far: $X.XXXX" at the approval gate
+
+**Recovery loop if all ideas killed:**
+- New `loop_condition: StepCondition | None` on `StepDefinition` — gates `loop_to` on a runtime check (defaults to None for backward compat)
+- New condition operator `survivor_count_below` and `_count_survivors` helper that counts opportunities with verdict in `{survives, weakened}`
+- `contrarian_analysis` step in `STARTUP_IDEA_PIPELINE` now has `loop_to=0`, `max_loop_count=2`, `loop_condition={survivor_count_below 3}`
+- When the loop fires, `advance_workflow` injects `previous_attempt_killed_all="true"` into context
+- The `landscape_scan` prompt detects this flag and switches into "RECOVERY MODE" — broadens the search, lowers the obviousness bar, leans harder on contrarian sources
+
+**Founder/team patterns** (existing tracker item):
+- `deep_dive` prompt extended with founder/team analysis instructions covering 5 archetypes (DOMAIN_EXPERT, TECHNICAL, REPEAT, FIRST_TIME, MIXED)
+- `DeepDiveOpportunity` schema gained optional `founder_patterns: str | None` field
+
+**Test framework — 36 new tests, 120 total passing locally:**
+
+| File | Tests | Purpose |
+|---|---|---|
+| `tests/test_startup_schemas.py` | +4 | Quality bar tests (too few rankings, low total_score, short MVP fields) |
+| `tests/test_research_validation.py` | +4 | Friendly error helper coverage |
+| `tests/test_workflow_models.py` | +2 | `loop_condition` field on StepDefinition |
+| `tests/test_loop_recovery.py` | **NEW** 18 | `_count_survivors` + `survivor_count_below` operator + template wiring assertions |
+| `tests/test_builder_artifact_enforcement.py` | **NEW** 8 | `_check_required_artifacts` + max_retries on build_mvp |
+| `tests/test_workflow_approval.py` | **NEW** 3 (DB-bound) | End-to-end `context_overrides` with selected_idea + fallback to rank-1 |
+| `tests/fixtures/startup_pipeline_fixtures.py` | (extended) | VALID_SYNTHESIS bumped to 3 rankings; new INVALID variants for Round 3 constraints |
+| `tests/test_workflow_context_pruning.py` | (updated) | Asserts build_mvp uses `selected_idea`, not `synthesis` |
+| `tests/test_prompt_schema_alignment.py` | (updated) | Longer placeholder strings to satisfy Round 3 min_length |
+
+**Local verification:**
+```
+python3 -m pytest \
+  tests/test_startup_schemas.py tests/test_prompt_schema_alignment.py \
+  tests/test_research_validation.py tests/test_workflow_context_pruning.py \
+  tests/test_workflow_retry.py tests/test_loop_recovery.py \
+  tests/test_builder_artifact_enforcement.py tests/test_workflow_models.py \
+  tests/test_research_models.py tests/test_builder_models.py \
+  --noconftest -q -k "not (failed_step or exhausted)"
+# 120 passed in 0.47s
+```
+
+**Pending deployment:** commit + push + git pull + `docker compose build api && docker compose up -d api && docker compose exec -T api alembic upgrade head` (to apply 0004), then `./scripts/run_tests.sh`.
+
+**Manual verification (post-deploy):**
+1. Run `./scripts/run_startup_pipeline.sh "AI dev tools" "code review" "solo dev"`
+2. At the approval gate, pick idea **#2** (not the default)
+3. Confirm the rendered build_mvp prompt contains idea #2's name (not idea #1's)
+4. Confirm the workspace contains `BUILD_DECISIONS.md` after the build
+5. Check the workflow's `total_estimated_cost_usd` is populated and shown at the gate
+6. Optional: run with a deliberately narrow domain so contrarian kills everything → confirm the loop fires and landscape gets `previous_attempt_killed_all=true`
+
 ## Structural Issues
 
 - [x] **No JSON validation on workflow outputs** — Round 2: per-step Pydantic schemas in `app/workflows/schemas.py`, registered via `StepDefinition.output_schema`, validated in `_extract_result` with strict mode. Validation failures raise `ClaudeRunError` and trigger auto-retry.
@@ -82,23 +162,38 @@ python3 -m pytest \
 - [x] **Subjective scoring with no anchors** — Added explicit 1/5/8/10 anchors for all 5 dimensions in Step 3.
 - [x] **No moat taxonomy** — Added 5-dimension `moats` block (network_effects, switching_costs, data_advantage, brand_or_trust, distribution_lock) in Step 3. Defensibility score derived from this.
 - [x] **MVP spec is vague** — Defined MVP strictly as "deployable software with one user-facing feature solving the core problem end-to-end". Added core_user_journey, out_of_scope, success_metric, risky_assumption fields.
-- [ ] **No recovery if all ideas killed** — Contrarian analysis can kill every opportunity, and the workflow just produces an empty synthesis with no loop back to expand the search. *(Architectural — deferred to next round)*
+- [x] **No recovery if all ideas killed** — Round 3: contrarian step now has `loop_to=0`, `max_loop_count=2`, and a `loop_condition: survivor_count_below 3`. When fewer than 3 opportunities survive, the workflow loops back to landscape with `previous_attempt_killed_all=true` injected; the landscape prompt detects this and broadens the search.
 - [x] **Total score is unweighted sum** — Now weighted (max 100): solo_dev_feasibility ×1.5, revenue_potential ×1.5, market_timing ×1.0, defensibility ×1.0, evidence_quality ×0.5.
 
 ## Missing Features
 
-- [ ] **No streaming/partial results** — Each research step takes 20-30 mins. User sees "running" with no intermediate feedback for 1-2 hours total.
-- [ ] **No cost/token tracking** — No visibility into Claude API usage before the approval gate. User can't make informed build/no-build decision.
+- [ ] **No streaming/partial results** — Each research step takes 20-30 mins. User sees "running" with no intermediate feedback for 1-2 hours total. *(Deferred to Round 4 — needs SSE plumbing through claude_runner)*
+- [x] **No cost/token tracking** — Round 3: `tokens_input`, `tokens_output`, `estimated_cost_usd` per JobRow + `total_estimated_cost_usd` aggregate on WorkflowResponse. Displayed at the approval gate.
 - [x] **No competitor pricing/unit economics** — Added structured `unit_economics` block (price point, billing model, CAC channel, gross margin signal) in Step 1.
 - [x] **No regulatory analysis** — Added explicit regulatory checklist in Step 2 with self-identification for fintech, health, education, EU, hiring, etc.
-- [ ] **No founder/team pattern analysis** — Doesn't look at who founded competing startups or what team patterns correlate with success in this space.
+- [x] **No founder/team pattern analysis** — Round 3: deep_dive prompt now asks for founder archetype (DOMAIN_EXPERT, TECHNICAL, REPEAT, FIRST_TIME, MIXED) with optional `founder_patterns` field on `DeepDiveOpportunity`.
 - [x] **No demand validation step** — Added tiered demand_signals (HOT/WARM/COLD) in Step 1 with clear definitions.
 - [x] **No comparative scoring** — Added `head_to_head` field in Step 3 forcing each opportunity to explain why it beats the next-ranked one.
 
 ## Architecture Improvements
 
-- [ ] **Add contrarian → landscape loop** — If contrarian kills most ideas, loop back to Step 0 with expanded search. Needs a new condition operator that can inspect JSON paths (e.g. `final_rankings_empty`). Deferred to Round 3.
-- [x] **Prune context for Step 5** — Round 2: `build_mvp` now has `context_inputs=["synthesis"]`.
+- [x] **Add contrarian → landscape loop** — Round 3: implemented via new `loop_condition` field on `StepDefinition` and `survivor_count_below` operator. Loops up to 2 times when fewer than 3 ideas survive contrarian.
+- [x] **Prune context for Step 5** — Round 2: `build_mvp` now has `context_inputs=["selected_idea"]` (Round 3 update — was `["synthesis"]` in Round 2).
 - [x] **Per-step timeout calibration** — Round 2: applied via `timeout_override` on each step.
-- [x] **Validate synthesis before approval** — Round 2: `SynthesisResult` schema enforces `final_rankings` non-empty, scores in range 1-10, all MVP spec fields including `risky_assumption` and `out_of_scope` required. Validation runs before the approval gate via `_extract_result` strict mode.
+- [x] **Validate synthesis before approval** — Round 2 + Round 3 quality bars: `SynthesisResult.final_rankings >= 3`, `total_score >= 20`, `MvpSpec` fields have min_lengths.
 - [ ] **Evidence verification post-processing** — Optional step to verify that 3+ key facts per opportunity (company names, funding amounts, market sizes) are real. Deferred — non-trivial (needs web search verification step).
+
+## Round 3 Bugs Fixed (caught in fresh sweep)
+
+- [x] **User couldn't pick a non-#1 idea** — Script discarded the user's choice; build_mvp always built rank-1. Fixed by sending `selected_idea` via `context_overrides` and rewiring build_mvp to read it.
+- [x] **`BUILD_DECISIONS.md` requirement not enforced** — Round 1 added it to the prompt; Round 3 actually checks for it via `_check_required_artifacts`.
+- [x] **Builder didn't honor per-step `timeout_override`** — Mirror of the Round 2 plumbing in research.py; builder now reads the StepDefinition.
+- [x] **Synthesis quality bar too lax** — Schema accepted empty MVP fields and a single low-score ranking. Fixed via min_lengths and `total_score>=20`.
+- [x] **Validation errors were verbose Pydantic dumps** — Replaced with one-line friendly errors.
+
+## Deferred to Round 4
+
+- [ ] Streaming partial results during 20-30 min Claude calls (architectural — needs SSE through claude_runner)
+- [ ] Evidence verification post-processing (needs a web-search verification step)
+- [ ] Worker-restart race condition with distributed locking (real but lower priority)
+- [ ] Full contributor documentation (separate writing effort)

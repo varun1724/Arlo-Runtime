@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -67,6 +67,13 @@ class JobRow(Base):
         UUID(as_uuid=True), ForeignKey("workflows.id"), nullable=True, index=True
     )
     step_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Round 3: token usage and estimated cost. Populated by job handlers
+    # after each Claude CLI call. Nullable because (a) older rows predate
+    # these columns and (b) some Claude CLI versions don't return usage data.
+    tokens_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(

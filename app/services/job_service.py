@@ -135,6 +135,9 @@ async def finalize_job(
     result_data: str | None = None,
     error_message: str | None = None,
     stop_reason: str | None = None,
+    tokens_input: int | None = None,
+    tokens_output: int | None = None,
+    estimated_cost_usd: float | None = None,
 ) -> None:
     now = datetime.now(timezone.utc)
     values: dict = {
@@ -150,6 +153,13 @@ async def finalize_job(
         values["error_message"] = error_message
     if stop_reason is not None:
         values["stop_reason"] = stop_reason
+    # Round 3: persist token usage and estimated cost when available.
+    if tokens_input is not None:
+        values["tokens_input"] = tokens_input
+    if tokens_output is not None:
+        values["tokens_output"] = tokens_output
+    if estimated_cost_usd is not None:
+        values["estimated_cost_usd"] = estimated_cost_usd
 
     await session.execute(update(JobRow).where(JobRow.id == job_id).values(**values))
     await session.commit()

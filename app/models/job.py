@@ -67,6 +67,11 @@ class JobResponse(BaseModel):
     workspace_pinned: bool = False
     workflow_id: uuid.UUID | None = None
     step_index: int | None = None
+    # Round 3: token usage and estimated cost (nullable for legacy rows
+    # and Claude CLI versions that don't return usage data)
+    tokens_input: int | None = None
+    tokens_output: int | None = None
+    estimated_cost_usd: float | None = None
     created_at: datetime
     started_at: datetime | None = None
     updated_at: datetime

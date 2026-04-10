@@ -12,11 +12,38 @@ from app.jobs.prompts import build_research_prompt
 from app.models.job import JobStatus, JobStopReason
 from app.models.research import ResearchReport
 from app.models.workflow import StepDefinition
-from app.services.claude_runner import ClaudeRunError, ClaudeTimeoutError, run_claude
+from app.services.claude_runner import (
+    ClaudeRunError,
+    ClaudeTimeoutError,
+    extract_usage,
+    run_claude,
+)
 from app.services.job_service import finalize_job, update_job_progress
 from app.workflows.schemas import get_schema
 
 logger = logging.getLogger("arlo.jobs.research")
+
+
+def _friendly_validation_error(err: ValidationError) -> str:
+    """Translate a Pydantic ValidationError into a one-line user-facing string.
+
+    Round 3: the raw Pydantic error string is verbose and confusing. Users
+    seeing this in workflow.error_message want to know two things: WHICH
+    field is wrong, and WHY. We extract the first error and format it.
+    The full error is still available via the chained ``__cause__`` and
+    in the structured logs.
+    """
+    errs = err.errors()
+    if not errs:
+        return str(err)
+    first = errs[0]
+    path_parts = first.get("loc", ())
+    path = ".".join(str(p) for p in path_parts) if path_parts else "(root)"
+    msg = first.get("msg", "validation error")
+    extra = ""
+    if len(errs) > 1:
+        extra = f" (and {len(errs) - 1} more)"
+    return f"Field '{path}': {msg}{extra}"
 
 
 async def execute_research_job(session: AsyncSession, job: JobRow) -> None:
@@ -75,14 +102,24 @@ async def execute_research_job(session: AsyncSession, job: JobRow) -> None:
 
         result_json, preview = _extract_result(result, is_workflow_job, schema_cls)
 
+        # Round 3: extract token usage for cost visibility
+        usage = extract_usage(result)
+
         await finalize_job(
             session,
             job.id,
             status=JobStatus.SUCCEEDED,
             result_preview=preview,
             result_data=result_json,
+            tokens_input=usage["input_tokens"],
+            tokens_output=usage["output_tokens"],
+            estimated_cost_usd=usage["estimated_cost_usd"],
         )
-        logger.info("Research job %s completed", job.id)
+        logger.info(
+            "Research job %s completed (tokens: %s in / %s out, est $%s)",
+            job.id, usage["input_tokens"], usage["output_tokens"],
+            usage["estimated_cost_usd"],
+        )
 
     except ClaudeTimeoutError:
         logger.warning("Research job %s timed out", job.id)
@@ -177,8 +214,11 @@ def _extract_result(
             try:
                 model = schema_cls.model_validate(content)
             except ValidationError as e:
+                # Round 3: surface a friendly one-liner; full error is logged
+                # via the exception handler in execute_research_job.
                 raise ClaudeRunError(
-                    f"Output validation failed against {schema_cls.__name__}: {e}"
+                    f"{schema_cls.__name__} validation failed — "
+                    f"{_friendly_validation_error(e)}"
                 ) from e
             result_json = model.model_dump_json()
             preview = _build_raw_preview(model.model_dump())
@@ -193,7 +233,7 @@ def _extract_result(
         report = ResearchReport.model_validate(content)
     except ValidationError as e:
         raise ClaudeRunError(
-            f"Output validation failed against ResearchReport: {e}"
+            f"ResearchReport validation failed — {_friendly_validation_error(e)}"
         ) from e
     return report.model_dump_json(), _build_report_preview(report)
 

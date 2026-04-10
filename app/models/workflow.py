@@ -57,6 +57,17 @@ class StepDefinition(BaseModel):
     workflow context is still saved to the workflow row for debugging.
     Defaults to None (= pass all keys, current behavior).
     """
+    loop_condition: StepCondition | None = None
+    """Round 3: gate ``loop_to`` on a condition evaluated after the step
+    completes successfully.
+
+    Without this field, ``loop_to``+``max_loop_count`` always loops back
+    until the count is exhausted. With it, the loop only fires when the
+    condition evaluates true. This lets contrarian_analysis loop back to
+    landscape_scan ONLY when the survivor count is below a threshold.
+    Defaults to None — when None, the existing unconditional loop behavior
+    is preserved for backward compatibility (e.g. strategy_evolution).
+    """
 
 
 # --- Request models ---
@@ -91,6 +102,11 @@ class WorkflowResponse(BaseModel):
     step_definitions: list[StepDefinition]
     current_step_index: int
     error_message: str | None = None
+    # Round 3: aggregated cost across all jobs in this workflow.
+    # Computed in the API serializer; nullable when no jobs report usage.
+    total_tokens_input: int | None = None
+    total_tokens_output: int | None = None
+    total_estimated_cost_usd: float | None = None
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None

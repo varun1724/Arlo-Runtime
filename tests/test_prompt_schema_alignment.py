@@ -94,7 +94,12 @@ def _populate_example(raw_json: str) -> dict[str, Any]:
         return f'"{options[0]}"'
 
     cleaned = _ENUM_PATTERN.sub(replace_enum, raw_json)
-    cleaned = _STRING_PLACEHOLDER.sub('"placeholder"', cleaned)
+    # Round 3 schemas added min_length constraints (e.g. core_user_journey >= 20).
+    # The placeholder must be long enough to satisfy the strictest constraint.
+    cleaned = _STRING_PLACEHOLDER.sub(
+        '"a longer placeholder string that satisfies min_length constraints"',
+        cleaned,
+    )
 
     return json.loads(cleaned)
 
@@ -157,10 +162,11 @@ def test_contrarian_prompt_example_matches_schema():
 
 
 def test_synthesis_prompt_example_matches_schema():
+    # Round 3: SynthesisResult.final_rankings now requires min_length=3.
     _alignment_check(
         "synthesis_and_ranking",
         SynthesisResult,
-        repeat_list_items=None,  # only needs 1 ranking, schema agrees
+        repeat_list_items={"final_rankings": 3},
     )
 
 
@@ -180,7 +186,9 @@ def test_populate_helper_picks_first_enum_option():
     raw = '{"verdict": "survives|weakened|killed", "name": "string — desc"}'
     parsed = _populate_example(raw)
     assert parsed["verdict"] == "survives"
-    assert parsed["name"] == "placeholder"
+    # Round 3: placeholder is now a longer string to satisfy min_length constraints.
+    assert "placeholder" in parsed["name"]
+    assert len(parsed["name"]) >= 20
 
 
 def test_populate_helper_skips_null_option():

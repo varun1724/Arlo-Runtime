@@ -186,8 +186,9 @@ def test_synthesis_valid():
 
 
 def test_synthesis_minimal():
+    """Round 3: minimum legal synthesis is 3 rankings (was 1 in Round 2)."""
     result = SynthesisResult.model_validate(MINIMAL_SYNTHESIS)
-    assert len(result.final_rankings) == 1
+    assert len(result.final_rankings) == 3
 
 
 def test_synthesis_rejects_empty_rankings():
@@ -195,6 +196,22 @@ def test_synthesis_rejects_empty_rankings():
     with pytest.raises(ValidationError) as exc:
         SynthesisResult.model_validate(INVALID_SYNTHESIS_EMPTY_RANKINGS)
     assert "final_rankings" in str(exc.value)
+
+
+def test_synthesis_rejects_too_few_rankings():
+    """Round 3: 2 rankings is below the min_length=3 floor."""
+    from tests.fixtures.startup_pipeline_fixtures import INVALID_SYNTHESIS_TOO_FEW_RANKINGS
+    with pytest.raises(ValidationError) as exc:
+        SynthesisResult.model_validate(INVALID_SYNTHESIS_TOO_FEW_RANKINGS)
+    assert "final_rankings" in str(exc.value)
+
+
+def test_synthesis_rejects_low_total_score():
+    """Round 3: total_score < 20 means Claude couldn't find a real opportunity."""
+    from tests.fixtures.startup_pipeline_fixtures import INVALID_SYNTHESIS_LOW_TOTAL_SCORE
+    with pytest.raises(ValidationError) as exc:
+        SynthesisResult.model_validate(INVALID_SYNTHESIS_LOW_TOTAL_SCORE)
+    assert "total_score" in str(exc.value)
 
 
 def test_synthesis_rejects_out_of_range_score():
@@ -207,6 +224,22 @@ def test_synthesis_rejects_missing_mvp_field():
     with pytest.raises(ValidationError) as exc:
         SynthesisResult.model_validate(INVALID_SYNTHESIS_MISSING_MVP_FIELD)
     assert "risky_assumption" in str(exc.value)
+
+
+def test_synthesis_rejects_short_risky_assumption():
+    """Round 3: risky_assumption needs at least 15 chars to be useful."""
+    from tests.fixtures.startup_pipeline_fixtures import INVALID_SYNTHESIS_SHORT_RISKY_ASSUMPTION
+    with pytest.raises(ValidationError) as exc:
+        SynthesisResult.model_validate(INVALID_SYNTHESIS_SHORT_RISKY_ASSUMPTION)
+    assert "risky_assumption" in str(exc.value)
+
+
+def test_synthesis_rejects_short_core_user_journey():
+    """Round 3: core_user_journey needs at least 20 chars."""
+    from tests.fixtures.startup_pipeline_fixtures import INVALID_SYNTHESIS_SHORT_CORE_USER_JOURNEY
+    with pytest.raises(ValidationError) as exc:
+        SynthesisResult.model_validate(INVALID_SYNTHESIS_SHORT_CORE_USER_JOURNEY)
+    assert "core_user_journey" in str(exc.value)
 
 
 def test_synthesis_rejects_bad_moat_rating():
