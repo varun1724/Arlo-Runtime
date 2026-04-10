@@ -19,8 +19,17 @@ def _apply_deep_research_mode(
     - ``contrarian_analysis.max_loop_count`` is bumped from 2 to 4 so
       the recovery loop can make more attempts when contrarian kills
       too many ideas.
+    - ``contrarian_analysis.timeout_override`` is bumped from 1800s to
+      2700s. Round 5.5: the first real deep-mode run hit a hard 30-min
+      timeout in contrarian because the broader landscape (15-20 opps)
+      means more named-failure / incumbent-threat searches per run.
+      45 minutes gives Claude room without the timeout becoming an
+      infinite license to spin.
     - ``landscape_scan.timeout_override`` is bumped from 900s to 1800s
       so the deeper landscape scan has room to breathe.
+    - ``synthesis_and_ranking.timeout_override`` is bumped from 1200s
+      to 1800s for the same reason — more opportunities to rank in
+      deep mode.
     - ``deep_mode="true"`` is injected into ``initial_context`` so the
       prompts that check for this key can broaden their search scope.
     """
@@ -29,8 +38,11 @@ def _apply_deep_research_mode(
         name = step.get("name")
         if name == "contrarian_analysis":
             step["max_loop_count"] = 4  # was 2
+            step["timeout_override"] = 2700  # was 1800; 45 min for deep mode
         elif name == "landscape_scan":
             step["timeout_override"] = 1800  # was 900
+        elif name == "synthesis_and_ranking":
+            step["timeout_override"] = 1800  # was 1200; more opps to rank
     new_context = {**initial_context, "deep_mode": "true"}
     return new_steps, new_context
 

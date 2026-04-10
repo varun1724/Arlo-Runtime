@@ -27,6 +27,22 @@ def test_apply_bumps_landscape_timeout():
     assert landscape["timeout_override"] == 1800
 
 
+def test_apply_bumps_contrarian_timeout():
+    """Round 5.5: deep mode bumps contrarian timeout from 1800s to 2700s.
+    Real production run hit the old 30-min wall mid-search."""
+    steps, _ = _apply_deep_research_mode(STARTUP_IDEA_PIPELINE["steps"], {})
+    contrarian = next(s for s in steps if s["name"] == "contrarian_analysis")
+    assert contrarian["timeout_override"] == 2700
+
+
+def test_apply_bumps_synthesis_timeout():
+    """Round 5.5: deep mode bumps synthesis timeout from 1200s to 1800s
+    because there are more opportunities to rank."""
+    steps, _ = _apply_deep_research_mode(STARTUP_IDEA_PIPELINE["steps"], {})
+    synthesis = next(s for s in steps if s["name"] == "synthesis_and_ranking")
+    assert synthesis["timeout_override"] == 1800
+
+
 def test_apply_adds_deep_mode_to_context():
     """Deep mode injects ``deep_mode="true"`` as a string into initial_context."""
     _, context = _apply_deep_research_mode(
