@@ -55,6 +55,10 @@ services:
       - DB_POSTGRESDB_USER=${POSTGRES_USER:-arlo}
       - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-arlo_dev_password}
       - N8N_API_KEY=${N8N_API_KEY:-arlo-n8n-dev-key}
+      # The host accesses n8n over plain HTTP via Tailscale (encrypted at
+      # the WireGuard layer), so the default secure cookie blocks login.
+      # Tailscale-only access makes the secure cookie redundant.
+      - N8N_SECURE_COOKIE=false
     depends_on:
       db:
         condition: service_healthy
