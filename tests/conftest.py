@@ -35,7 +35,7 @@ async def _isolate_db_writes():
     from sqlalchemy import delete, select
 
     from app.db.engine import async_session
-    from app.db.models import JobRow, WorkflowRow
+    from app.db.models import JobEventRow, JobRow, WorkflowRow
 
     try:
         async with async_session() as session:
@@ -58,7 +58,12 @@ async def _isolate_db_writes():
 
     try:
         async with async_session() as session:
-            # Jobs first (FK depends on workflows)
+            # Order matters: job_events FK -> jobs FK -> workflows.
+            # Drop job_events for any new jobs first, then the jobs,
+            # then the workflows.
+            await session.execute(
+                delete(JobEventRow).where(JobEventRow.job_id.notin_(existing_jobs))
+            )
             await session.execute(
                 delete(JobRow).where(JobRow.id.notin_(existing_jobs))
             )
