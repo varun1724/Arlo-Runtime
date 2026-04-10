@@ -315,11 +315,44 @@ python3 -m pytest \
 6. ~15 minutes later: receive the second email with the tar.gz download link
 7. Download from the phone, inspect — should contain README.md, BUILD_DECISIONS.md, full project
 
+## Round 5 — Manual verification checklist
+
+Round 5 ships the code, but the headline async-approval flow is only really "done" once it's been driven end-to-end on real hardware with real email. Walk this list before declaring victory:
+
+- [ ] Worker container is actually running (`docker compose ps` shows `arlo-runtime-worker-1` Up). The api alone can't process jobs.
+- [ ] SMTP env vars set in `C:\trading\Arlo-Runtime\.env`: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM_ADDRESS`, `APPROVAL_RECIPIENT_EMAIL`, `NOTIFICATION_BASE_URL` (must be the Tailscale IP, not localhost)
+- [ ] Gmail App Password generated (not the real account password)
+- [ ] `docker compose exec -T api pytest tests/ -v --tb=short` — full suite passes (~200 tests)
+- [ ] Kick off a `deep_research_mode: true` pipeline via curl from the Mac
+- [ ] Email lands on phone ~45-60 minutes later with PDF attached and clickable approval links
+- [ ] Click link → success page renders → workflow advances past `AWAITING_APPROVAL`
+- [ ] Second email arrives ~15 minutes later with the tar.gz download link
+- [ ] Download tarball from phone → contains README.md + BUILD_DECISIONS.md + project source
+- [ ] Confirm `tool_activity` shows up in the worker logs during landscape_scan (e.g. "Using WebSearch — Streaming output (...)") — the Round 4 bug fix
+- [ ] Confirm the script's `is not None` truthiness fix didn't regress: live cost line still appears in `scripts/run_startup_pipeline.sh` polling output
+
+If any item fails, that's the next thing to fix — Round 5 isn't done until they all pass.
+
 ## Deferred to Round 6
 
-- [ ] Evidence verification post-processing (needs a separate Claude call with web search; non-trivial design)
-- [ ] Worker-restart race condition with distributed locking (rare in practice)
+**Tier 1 — high value, ship next:**
+
+- [ ] **Evidence verification post-processing.** Lightweight Claude call after `deep_dive` that re-runs the top-N specific claims (named companies, dates, "TechCrunch said X") through web search and flags any that can't be corroborated. Adds a `verification_status` field to each opportunity. Single biggest remaining quality risk — everything downstream of `landscape_scan` assumes the source data is real.
+- [ ] **Build retry with feedback.** Right now `build_mvp` failures retry from scratch with the same prompt. Capture the error output (missing import, syntax error, failed test) and inject it into the next attempt's context as "previous attempt failed because: ...". Small change in `builder.py` + `_should_retry_step`.
+- [ ] **iOS Arlo app deep integration.** Round 5's async approval flow is exactly the foundation for native push notifications. Instead of clicking an email link, get a push on the iPhone, tap a card in the Arlo app, the app calls the same `/approve-link/{token}` endpoint. Mostly Swift work + minor REST surface additions.
+
+**Tier 2 — quality of life:**
+
+- [ ] **Skipped-idea memory.** Track which ranked ideas the user explicitly DIDN'T pick across runs. Inject as negative context for future landscape_scans (or surface as "you skipped this last week — still want to look?"). New small table + context injection.
+- [ ] **Cost/time dashboard at `/dashboard`.** Aggregate the per-job token + cost data already tracked into a simple HTML view: last 10 workflows, cost per workflow, time per step, success rate per step. Makes optimization targets obvious.
+- [ ] **Use BUILD_DECISIONS.md.** Round 1 enforces its existence but never reads it back. New optional post-build "review" step that reads the doc, runs the test for `risky_assumption`, and emits a verdict.
+- [ ] **Notification HTML template on disk.** Move the inline string in `report_renderer.py` to `templates/emails/approval_gate.html` so styling tweaks don't require Python edits.
+
+**Tier 3 — infrastructure (defer until it bites):**
+
+- [ ] Worker-restart race condition with distributed locking (rare in practice; wait for the real failure)
 - [ ] Schema versioning v2 path (premature until we actually need to break v1)
-- [ ] iOS Arlo app deep integration (separate project; wait for REST API to stabilize)
-- [ ] Notification HTML template on disk (move from inline string to `templates/emails/approval_gate.html`)
-- [ ] Full CONTRIBUTING.md / WORKFLOW_DESIGN.md guides (the targeted `docs/ADDING_A_TEMPLATE.md` ships in Round 4; broader guides can come later)
+- [ ] Full CONTRIBUTING.md / WORKFLOW_DESIGN.md guides (the targeted `docs/ADDING_A_TEMPLATE.md` ships in Round 4)
+- [ ] Streaming tar implementation for very large workspaces (current in-memory tar is fine for typical sizes)
+
+**Recommendation for Round 6 scope:** ship Tier 1 items (#1 evidence verification + #2 build retry with feedback + #3 iOS integration). Those are the highest-leverage improvements — #1 fixes the biggest remaining quality risk, #2 closes the most common failure mode you'll see in practice, and #3 is the natural next step now that the async approval flow exists.
