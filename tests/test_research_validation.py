@@ -405,3 +405,111 @@ def test_extract_json_returns_input_when_no_json_found():
 
     raw = "  no json at all here  "
     assert _extract_json_payload(raw) == "no json at all here"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 5.6: _sanitize_json_payload — strip Claude's JS-isms
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_sanitize_strips_trailing_comma_in_object():
+    """Real production failure: Claude wrote {..., "x": 1, } which is
+    invalid JSON. The error was 'Expecting property name enclosed in
+    double quotes' deep in the file."""
+    from app.jobs.research import _sanitize_json_payload
+    import json as _json
+
+    raw = '{"a": 1, "b": 2,}'
+    cleaned = _sanitize_json_payload(raw)
+    assert _json.loads(cleaned) == {"a": 1, "b": 2}
+
+
+def test_sanitize_strips_trailing_comma_in_array():
+    from app.jobs.research import _sanitize_json_payload
+    import json as _json
+
+    raw = '{"items": [1, 2, 3,]}'
+    cleaned = _sanitize_json_payload(raw)
+    assert _json.loads(cleaned) == {"items": [1, 2, 3]}
+
+
+def test_sanitize_strips_nested_trailing_commas():
+    from app.jobs.research import _sanitize_json_payload
+    import json as _json
+
+    raw = '{"outer": {"inner": [1, 2,], "k": "v",},}'
+    cleaned = _sanitize_json_payload(raw)
+    assert _json.loads(cleaned) == {"outer": {"inner": [1, 2], "k": "v"}}
+
+
+def test_sanitize_preserves_commas_inside_strings():
+    """A literal comma inside a string value is NOT a trailing comma
+    and must not be touched, even if followed by whitespace + closing
+    bracket within the same string."""
+    from app.jobs.research import _sanitize_json_payload
+    import json as _json
+
+    raw = '{"k": "value, with comma"}'
+    cleaned = _sanitize_json_payload(raw)
+    assert _json.loads(cleaned) == {"k": "value, with comma"}
+
+
+def test_sanitize_strips_line_comments():
+    from app.jobs.research import _sanitize_json_payload
+    import json as _json
+
+    raw = '{\n  "a": 1, // this is a comment\n  "b": 2\n}'
+    cleaned = _sanitize_json_payload(raw)
+    assert _json.loads(cleaned) == {"a": 1, "b": 2}
+
+
+def test_sanitize_strips_block_comments():
+    from app.jobs.research import _sanitize_json_payload
+    import json as _json
+
+    raw = '{"a": 1, /* multi\nline\ncomment */ "b": 2}'
+    cleaned = _sanitize_json_payload(raw)
+    assert _json.loads(cleaned) == {"a": 1, "b": 2}
+
+
+def test_sanitize_preserves_slashes_in_strings():
+    """URLs and forward slashes inside string values must survive the
+    line-comment regex untouched."""
+    from app.jobs.research import _sanitize_json_payload
+    import json as _json
+
+    raw = '{"url": "https://example.com/path", "n": 1}'
+    cleaned = _sanitize_json_payload(raw)
+    assert _json.loads(cleaned) == {"url": "https://example.com/path", "n": 1}
+
+
+def test_sanitize_handles_escaped_quotes_in_strings():
+    """Escaped quotes inside string values must not confuse the
+    string-tracking pass."""
+    from app.jobs.research import _sanitize_json_payload
+    import json as _json
+
+    raw = r'{"q": "she said \"hi\"", "n": 1,}'
+    cleaned = _sanitize_json_payload(raw)
+    assert _json.loads(cleaned)["q"] == 'she said "hi"'
+
+
+def test_sanitize_noop_on_clean_json():
+    """Clean JSON must pass through unchanged."""
+    from app.jobs.research import _sanitize_json_payload
+    import json as _json
+
+    raw = '{"a": [1, 2, 3], "b": {"c": "d"}}'
+    cleaned = _sanitize_json_payload(raw)
+    assert _json.loads(cleaned) == {"a": [1, 2, 3], "b": {"c": "d"}}
+
+
+def test_extract_json_payload_applies_sanitization():
+    """Round 5.6 integration: _extract_json_payload should produce
+    sanitized output for the bare-brace path."""
+    from app.jobs.research import _extract_json_payload
+    import json as _json
+
+    raw = 'preamble {"a": 1, "b": [2, 3,],}'
+    extracted = _extract_json_payload(raw)
+    assert _json.loads(extracted) == {"a": 1, "b": [2, 3]}

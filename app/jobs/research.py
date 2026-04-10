@@ -35,6 +35,121 @@ logger = logging.getLogger("arlo.jobs.research")
 # anywhere in the string. The (?s) flag makes . match newlines.
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
+# Round 5.6 hotfix: Claude regularly emits trailing commas (`{"a": 1,}`)
+# and JS-style line/block comments in deep JSON outputs. These are valid
+# JavaScript but invalid JSON, and json.loads chokes with errors like
+# "Expecting property name enclosed in double quotes" deep in the file.
+# These two regexes strip those forms safely WITHOUT touching string
+# contents (we walk the string character-by-character to skip anything
+# inside double quotes).
+_TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
+_LINE_COMMENT_RE = re.compile(r"//[^\n]*")
+_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def _sanitize_json_payload(payload: str) -> str:
+    """Strip Claude's JS-isms from an extracted JSON payload.
+
+    Two transformations applied OUTSIDE of string literals only:
+    1. Trailing commas before ``}`` or ``]`` are removed.
+    2. ``// line comments`` and ``/* block comments */`` are removed.
+
+    String contents are preserved exactly because we walk the payload
+    character-by-character and only modify the regions outside double-
+    quoted strings. A naive ``re.sub`` over the whole string would
+    corrupt legitimate apostrophes, URLs, and forward slashes inside
+    string values (e.g. ``"price": "$9 // unit"``).
+    """
+    # Build a list of (start, end) ranges that are INSIDE string literals
+    # so we can skip them when applying the regexes.
+    string_ranges: list[tuple[int, int]] = []
+    in_string = False
+    escape = False
+    string_start = 0
+    for i, ch in enumerate(payload):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            if in_string:
+                string_ranges.append((string_start, i + 1))
+                in_string = False
+            else:
+                in_string = True
+                string_start = i
+
+    def _in_string(pos: int) -> bool:
+        for s, e in string_ranges:
+            if s <= pos < e:
+                return True
+            if pos < s:
+                return False
+        return False
+
+    # Apply each regex but skip matches that fall inside string literals.
+    def _strip(pattern: re.Pattern, replacement: str, text: str) -> str:
+        # Recompute string_ranges after each pass since indices shift.
+        result_parts: list[str] = []
+        last_end = 0
+        for m in pattern.finditer(text):
+            if _in_string(m.start()):
+                continue
+            result_parts.append(text[last_end:m.start()])
+            result_parts.append(m.expand(replacement))
+            last_end = m.end()
+        result_parts.append(text[last_end:])
+        return "".join(result_parts)
+
+    # Strip block comments first (they can span multiple lines and contain
+    # // sequences that the line-comment regex would otherwise mishandle).
+    payload = _strip(_BLOCK_COMMENT_RE, "", payload)
+    # Recompute string ranges since the payload changed.
+    string_ranges = []
+    in_string = False
+    escape = False
+    string_start = 0
+    for i, ch in enumerate(payload):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            if in_string:
+                string_ranges.append((string_start, i + 1))
+                in_string = False
+            else:
+                in_string = True
+                string_start = i
+
+    payload = _strip(_LINE_COMMENT_RE, "", payload)
+    # Recompute again before trailing comma pass.
+    string_ranges = []
+    in_string = False
+    escape = False
+    string_start = 0
+    for i, ch in enumerate(payload):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            if in_string:
+                string_ranges.append((string_start, i + 1))
+                in_string = False
+            else:
+                in_string = True
+                string_start = i
+
+    payload = _strip(_TRAILING_COMMA_RE, r"\1", payload)
+    return payload
+
 
 def _extract_json_payload(content: str) -> str:
     """Pull a JSON object out of Claude's response, ignoring preamble text.
@@ -46,13 +161,17 @@ def _extract_json_payload(content: str) -> str:
        cases where Claude forgets the fence entirely.
     3. Return the original (stripped) content. JSON parsing will then
        fail with a clear error and the auto-retry path kicks in.
+
+    Round 5.6: in all three paths, the extracted payload is then
+    sanitized to strip Claude's JS-isms (trailing commas, line/block
+    comments). See ``_sanitize_json_payload``.
     """
     cleaned = content.strip()
 
     # 1. Try to find a fenced JSON block anywhere in the string
     match = _JSON_FENCE_RE.search(cleaned)
     if match:
-        return match.group(1).strip()
+        return _sanitize_json_payload(match.group(1).strip())
 
     # 2. No fence — try to find the first balanced { ... } block.
     # Walk character-by-character tracking brace depth, ignoring braces
@@ -80,11 +199,11 @@ def _extract_json_payload(content: str) -> str:
             elif ch == "}":
                 depth -= 1
                 if depth == 0:
-                    return cleaned[start:i + 1]
+                    return _sanitize_json_payload(cleaned[start:i + 1])
 
     # 3. Last resort: return what we have. Will fail JSON parsing
     # with a clear error and trigger the auto-retry path.
-    return cleaned
+    return _sanitize_json_payload(cleaned)
 
 
 def _friendly_validation_error(err: ValidationError) -> str:
