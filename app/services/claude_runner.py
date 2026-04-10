@@ -273,8 +273,26 @@ async def _run_claude_streaming(
     final_result_event: dict[str, Any] | None = None
     deadline = time.monotonic() + timeout
 
-    try:
+    # Round 5.5 hotfix: do NOT use process.stdout.readline() — its
+    # underlying StreamReader has a hardcoded 64KB per-line limit and
+    # raises LimitOverrunError when Claude emits a single stream-json
+    # event larger than that. Deep research mode triggers this regularly
+    # because individual assistant content blocks can hit hundreds of KB.
+    # Instead, read raw bytes in chunks and split on '\n' ourselves —
+    # no per-line size cap, just whatever memory the process has.
+    line_buffer = bytearray()
+
+    async def _read_next_line() -> bytes | None:
+        """Return the next complete line (without trailing \\n), or
+        None on EOF. No size limit. Respects the outer ``deadline``.
+        """
         while True:
+            nl_idx = line_buffer.find(b"\n")
+            if nl_idx != -1:
+                line = bytes(line_buffer[:nl_idx])
+                del line_buffer[:nl_idx + 1]
+                return line
+
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 _kill_process(process)
@@ -282,10 +300,9 @@ async def _run_claude_streaming(
                     f"Claude Code CLI timed out after {timeout}s",
                     exit_code=-1,
                 )
-
             try:
-                line_bytes = await asyncio.wait_for(
-                    process.stdout.readline(), timeout=remaining
+                chunk = await asyncio.wait_for(
+                    process.stdout.read(65536), timeout=remaining
                 )
             except asyncio.TimeoutError:
                 _kill_process(process)
@@ -293,8 +310,19 @@ async def _run_claude_streaming(
                     f"Claude Code CLI timed out after {timeout}s",
                     exit_code=-1,
                 )
+            if not chunk:
+                # EOF — flush any trailing partial line then signal end
+                if line_buffer:
+                    line = bytes(line_buffer)
+                    line_buffer.clear()
+                    return line
+                return None
+            line_buffer.extend(chunk)
 
-            if not line_bytes:
+    try:
+        while True:
+            line_bytes = await _read_next_line()
+            if line_bytes is None:
                 # EOF — process is exiting
                 break
 

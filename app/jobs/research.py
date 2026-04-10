@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 
 from pydantic import BaseModel, ValidationError
@@ -24,6 +25,66 @@ from app.services.job_service import finalize_job, update_job_progress
 from app.workflows.schemas import get_schema
 
 logger = logging.getLogger("arlo.jobs.research")
+
+
+# Round 5.5 hotfix: Claude often prefixes its JSON response with English
+# explanation ("Now I have sufficient data... Let me compile..."), and
+# sometimes wraps the JSON in a ```json fence with content before AND after.
+# The previous code only handled fences at the start/end of the string, so
+# any preamble text broke parsing. This regex finds the first fenced block
+# anywhere in the string. The (?s) flag makes . match newlines.
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+def _extract_json_payload(content: str) -> str:
+    """Pull a JSON object out of Claude's response, ignoring preamble text.
+
+    Strategy in order of preference:
+    1. Find the first ```json...``` (or ```...```) fenced block. Most
+       reliable because it's how Claude is told to format JSON output.
+    2. Find the first balanced ``{...}`` substring as a fallback. Handles
+       cases where Claude forgets the fence entirely.
+    3. Return the original (stripped) content. JSON parsing will then
+       fail with a clear error and the auto-retry path kicks in.
+    """
+    cleaned = content.strip()
+
+    # 1. Try to find a fenced JSON block anywhere in the string
+    match = _JSON_FENCE_RE.search(cleaned)
+    if match:
+        return match.group(1).strip()
+
+    # 2. No fence — try to find the first balanced { ... } block.
+    # Walk character-by-character tracking brace depth, ignoring braces
+    # inside strings. This handles preamble text before a bare JSON object.
+    start = cleaned.find("{")
+    if start != -1:
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(cleaned)):
+            ch = cleaned[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return cleaned[start:i + 1]
+
+    # 3. Last resort: return what we have. Will fail JSON parsing
+    # with a clear error and trigger the auto-retry path.
+    return cleaned
 
 
 def _friendly_validation_error(err: ValidationError) -> str:
@@ -230,13 +291,7 @@ def _extract_result(
 
     # Parse string content to JSON
     if isinstance(content, str):
-        cleaned = content.strip()
-        if cleaned.startswith("```"):
-            first_newline = cleaned.index("\n")
-            cleaned = cleaned[first_newline + 1:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
+        cleaned = _extract_json_payload(content)
 
         try:
             content = json.loads(cleaned)

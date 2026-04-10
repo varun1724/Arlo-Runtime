@@ -339,3 +339,69 @@ def test_extract_usage_garbage_token_values_returns_none():
     assert result["input_tokens"] is None
     assert result["output_tokens"] is None
     assert result["estimated_cost_usd"] is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 5.5: _extract_json_payload — Claude preamble tolerance
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_extract_json_strips_preamble_before_fence():
+    """Real production failure: Claude prefixed an English sentence
+    before its ```json fence. The previous parser only stripped fences
+    at start/end of the cleaned string and choked on 'N' from 'Now'."""
+    from app.jobs.research import _extract_json_payload
+
+    raw = (
+        "Now I have sufficient data from all sources. Let me compile.\n"
+        "\n"
+        '```json\n{"market_size": "10B", "key_players": []}\n```\n'
+    )
+    extracted = _extract_json_payload(raw)
+    import json as _json
+    parsed = _json.loads(extracted)
+    assert parsed["market_size"] == "10B"
+
+
+def test_extract_json_strips_preamble_no_fence():
+    """No fence at all — bare JSON object after preamble text."""
+    from app.jobs.research import _extract_json_payload
+
+    raw = "Here is the result.\n{\"a\": 1, \"b\": [2, 3]}\nThanks!"
+    extracted = _extract_json_payload(raw)
+    import json as _json
+    parsed = _json.loads(extracted)
+    assert parsed == {"a": 1, "b": [2, 3]}
+
+
+def test_extract_json_handles_braces_in_strings():
+    """The brace-counting fallback must ignore braces inside string
+    literals (e.g. ``"price": "$5{...}"``)."""
+    from app.jobs.research import _extract_json_payload
+
+    raw = 'preamble {"k": "value with } brace", "n": 1}'
+    extracted = _extract_json_payload(raw)
+    import json as _json
+    parsed = _json.loads(extracted)
+    assert parsed["n"] == 1
+    assert "}" in parsed["k"]
+
+
+def test_extract_json_plain_json_passthrough():
+    """A clean JSON string with no preamble must still parse."""
+    from app.jobs.research import _extract_json_payload
+
+    raw = '{"x": 42}'
+    extracted = _extract_json_payload(raw)
+    import json as _json
+    assert _json.loads(extracted) == {"x": 42}
+
+
+def test_extract_json_returns_input_when_no_json_found():
+    """If neither a fence nor a brace block exists, return the
+    stripped input so json.loads fails with a clear error and the
+    auto-retry path kicks in."""
+    from app.jobs.research import _extract_json_payload
+
+    raw = "  no json at all here  "
+    assert _extract_json_payload(raw) == "no json at all here"

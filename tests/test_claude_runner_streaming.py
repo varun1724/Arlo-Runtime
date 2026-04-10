@@ -38,21 +38,27 @@ from app.services.claude_runner import (
 
 
 class _FakeStreamReader:
-    """Mimics asyncio.StreamReader for our purposes — yields one line at a time."""
+    """Mimics asyncio.StreamReader. Round 5.5: the runner now uses
+    ``read(n)`` instead of ``readline()`` to avoid the 64KB line cap,
+    so this fake hands out one scripted line per ``read()`` call. The
+    runner buffers them and splits on newlines exactly like the real
+    process stdout would.
+    """
 
     def __init__(self, lines: list[bytes], delay_per_line: float = 0.0):
         self._lines = list(lines)
         self._delay = delay_per_line
 
-    async def readline(self) -> bytes:
+    async def read(self, n: int = -1) -> bytes:
         if self._delay:
             await asyncio.sleep(self._delay)
         if not self._lines:
             return b""
         return self._lines.pop(0)
 
-    async def read(self, n: int = -1) -> bytes:
-        return b""
+    async def readline(self) -> bytes:
+        # Kept for backwards-compat in case anything else calls it.
+        return await self.read()
 
 
 class _FakeProcess:
@@ -360,3 +366,41 @@ async def test_streaming_tool_result_clears_tool_activity():
     # But there was a moment when tool_activity was set
     activities = [s.get("tool_activity") for s in snapshots]
     assert "Using WebSearch" in activities
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 5.5 hotfix: large stream-json events (>64KB)
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_streaming_handles_event_larger_than_64kb():
+    """Real production failure: Claude emitted a single stream-json line
+    larger than asyncio.StreamReader's default 64KB limit, and
+    readline() raised LimitOverrunError mid-stream. The fix replaces
+    readline() with a manual chunked reader. This test injects a
+    100KB text payload to make sure the new path handles it.
+    """
+    big_text = "x" * (100 * 1024)  # 100KB
+    events = [
+        _line({"type": "system", "subtype": "init", "model": "claude-sonnet-4"}),
+        _line({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": big_text}]},
+        }),
+        _line({"type": "result", "result": big_text,
+               "usage": {"input_tokens": 1, "output_tokens": 1}}),
+    ]
+    fake = _FakeProcess(events)
+
+    async def fake_create(*args, **kwargs):
+        return fake
+
+    with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
+        result = await _run_claude_streaming(
+            ["claude"], cwd=None, timeout=10, on_progress=None,
+        )
+
+    # Full payload survives
+    assert len(result["result"]) == 100 * 1024
+    assert result["result"] == big_text
