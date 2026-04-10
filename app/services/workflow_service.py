@@ -318,34 +318,42 @@ async def approve_step(
         # Create the job and resume
         current_step = step_defs[current_index]
 
-        # Defensive fallback: if the next step needs `selected_idea` (via
-        # context_inputs) but the caller didn't provide one in context_overrides,
-        # default to the rank-1 entry from the prior synthesis. This keeps direct
-        # API callers (and old scripts) working without forcing them to pick.
-        if (
-            current_step.context_inputs is not None
-            and "selected_idea" in current_step.context_inputs
-            and "selected_idea" not in context
-        ):
-            try:
-                synthesis_raw = context.get("synthesis")
-                synthesis_dict = (
-                    json.loads(synthesis_raw)
-                    if isinstance(synthesis_raw, str)
-                    else synthesis_raw
-                )
-                rankings = (synthesis_dict or {}).get("final_rankings") or []
-                if rankings:
-                    context["selected_idea"] = rankings[0]
-                    logger.info(
-                        "Workflow %s: no selected_idea provided, defaulting to rank-1",
+        # Defensive fallback: if any downstream step needs `selected_idea`
+        # (via context_inputs) but the caller didn't provide one in
+        # context_overrides, default to the rank-1 entry from the prior
+        # synthesis. This keeps direct API callers (and old scripts)
+        # working without forcing them to pick.
+        #
+        # Note: we walk *forward* from the current step. The current step
+        # is the approval gate itself (a placeholder with no context_inputs),
+        # so checking only the current step misses the point — the consumer
+        # is the step that comes AFTER the approval.
+        if "selected_idea" not in context:
+            needs_selected_idea = any(
+                step.context_inputs is not None
+                and "selected_idea" in step.context_inputs
+                for step in step_defs[current_index:]
+            )
+            if needs_selected_idea:
+                try:
+                    synthesis_raw = context.get("synthesis")
+                    synthesis_dict = (
+                        json.loads(synthesis_raw)
+                        if isinstance(synthesis_raw, str)
+                        else synthesis_raw
+                    )
+                    rankings = (synthesis_dict or {}).get("final_rankings") or []
+                    if rankings:
+                        context["selected_idea"] = rankings[0]
+                        logger.info(
+                            "Workflow %s: no selected_idea provided, defaulting to rank-1",
+                            workflow_id,
+                        )
+                except (json.JSONDecodeError, TypeError, KeyError):
+                    logger.warning(
+                        "Workflow %s: could not extract default selected_idea from synthesis",
                         workflow_id,
                     )
-            except (json.JSONDecodeError, TypeError, KeyError):
-                logger.warning(
-                    "Workflow %s: could not extract default selected_idea from synthesis",
-                    workflow_id,
-                )
         await session.execute(
             update(WorkflowRow)
             .where(WorkflowRow.id == workflow_id)
