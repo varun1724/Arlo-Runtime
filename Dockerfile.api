@@ -2,6 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /opt/arlo
 
+# Make /opt/arlo importable as the package root for any subprocess
+# (uvicorn picks this up implicitly, but `alembic` and bare `pytest`
+# don't add cwd to sys.path on their own).
+ENV PYTHONPATH=/opt/arlo
+
 # Install dependencies first (layer caching).
 # Include dev extras so pytest is available for `docker compose exec api pytest`.
 COPY pyproject.toml .
