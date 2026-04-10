@@ -72,17 +72,15 @@ async def test_get_workflow_not_found(client):
     assert r.status_code == 404
 
 
-@pytest.mark.asyncio
-async def test_startup_pipeline_research_steps_have_output_schemas(client):
+def test_startup_pipeline_research_steps_have_output_schemas():
     """Round 2: every research step in startup_idea_pipeline must have
     an output_schema set, otherwise validation silently degrades."""
-    r = await client.get("/workflows/templates")
-    assert r.status_code == 200
-    pipeline = r.json()["startup_idea_pipeline"]
+    from app.workflows.templates import STARTUP_IDEA_PIPELINE
 
-    research_steps = [s for s in pipeline["steps"] if s["job_type"] == "research"]
-    # The approval gate is also job_type="research" but its prompt_template is a placeholder
-    research_steps = [s for s in research_steps if not s.get("requires_approval", False)]
+    research_steps = [
+        s for s in STARTUP_IDEA_PIPELINE["steps"]
+        if s["job_type"] == "research" and not s.get("requires_approval", False)
+    ]
 
     for step in research_steps:
         assert step.get("output_schema") is not None, (
@@ -93,12 +91,9 @@ async def test_startup_pipeline_research_steps_have_output_schemas(client):
         )
 
 
-@pytest.mark.asyncio
-async def test_startup_pipeline_build_mvp_has_context_inputs(client):
+def test_startup_pipeline_build_mvp_has_context_inputs():
     """Round 2: build_mvp must prune context to only the synthesis key."""
-    r = await client.get("/workflows/templates")
-    assert r.status_code == 200
-    pipeline = r.json()["startup_idea_pipeline"]
+    from app.workflows.templates import STARTUP_IDEA_PIPELINE
 
-    build_mvp = next(s for s in pipeline["steps"] if s["name"] == "build_mvp")
+    build_mvp = next(s for s in STARTUP_IDEA_PIPELINE["steps"] if s["name"] == "build_mvp")
     assert build_mvp["context_inputs"] == ["synthesis"]

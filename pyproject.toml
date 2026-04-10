@@ -28,3 +28,10 @@ line-length = 100
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Share one event loop across the whole test session. The async SQLAlchemy
+# engine in app/db/engine.py is created at import time and binds its
+# connection pool to whatever loop is active when the first query runs;
+# without these, every test gets a fresh loop and pooled connections die
+# with "another operation is in progress" / "attached to a different loop".
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
