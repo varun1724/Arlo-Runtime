@@ -1,0 +1,8 @@
+# Shell scripts must always have LF line endings, otherwise Linux
+# containers fail with "exec: no such file or directory" when checked
+# out on Windows (the kernel reads "#!/bin/bash\r" as an interpreter
+# named "/bin/bash\r" and gives up).
+*.sh text eol=lf
+
+# Same for the worker entrypoint, which has no extension in some refs
+docker/worker-entrypoint.sh text eol=lf
