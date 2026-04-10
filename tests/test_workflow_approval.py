@@ -22,8 +22,14 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_approve_with_selected_idea_passes_to_next_step(client):
-    """End-to-end: user provides selected_idea via context_overrides, the
-    next step's prompt is rendered with that value (not rank-1)."""
+    """End-to-end: user provides selected_idea via context_overrides, then
+    after the approval-gated placeholder runs, the next step's prompt is
+    rendered with the user's pick (not rank-1).
+
+    Flow: fake_research (succeeds) -> approval gate (paused) -> approve
+    with selected_idea -> placeholder job created -> mark it succeeded ->
+    advance again -> consumer job created with rendered prompt.
+    """
     from sqlalchemy import select
 
     from app.db.engine import async_session
@@ -32,9 +38,6 @@ async def test_approve_with_selected_idea_passes_to_next_step(client):
     from app.models.workflow import WorkflowStatus
     from app.services.workflow_service import advance_workflow
 
-    # Hand-crafted 2-step workflow: a research step followed by an approval-
-    # gated step that needs context_inputs=["selected_idea"]. We don't run
-    # the full startup_idea_pipeline because it makes real Claude calls.
     create = await client.post(
         "/workflows",
         json={
@@ -98,8 +101,17 @@ async def test_approve_with_selected_idea_passes_to_next_step(client):
     )
     assert approve.status_code == 200, approve.text
 
-    # Verify the next job's prompt was rendered with idea #2's name
+    # Sanity: the workflow context now contains selected_idea (this is the
+    # actual contract — what build_mvp will render against later).
     async with async_session() as session:
+        wf = await session.get(WorkflowRow, workflow_id)
+        ctx = json.loads(wf.context)
+        assert "selected_idea" in ctx
+        assert ctx["selected_idea"]["name"] == "second idea"
+
+        # Approving a gated step creates a job for the gated step itself
+        # (the placeholder). Mark it succeeded so the workflow advances
+        # to the consumer step.
         jobs = (
             await session.execute(
                 select(JobRow)
@@ -107,8 +119,25 @@ async def test_approve_with_selected_idea_passes_to_next_step(client):
                 .order_by(JobRow.created_at)
             )
         ).scalars().all()
-        # 1 research job + 1 consumer job (approval is gated, no job created)
-        assert len(jobs) == 2
+        assert len(jobs) == 2  # research + approval-placeholder
+        approval_job = jobs[-1]
+        approval_job.status = JobStatus.SUCCEEDED.value
+        approval_job.result_data = "{}"
+        approval_job.completed_at = datetime.now(timezone.utc)
+        await session.commit()
+
+        # Advance again — now the consumer step's job is created with the
+        # rendered prompt containing the user's selected idea.
+        await advance_workflow(session, workflow_id)
+
+        jobs = (
+            await session.execute(
+                select(JobRow)
+                .where(JobRow.workflow_id == workflow_id)
+                .order_by(JobRow.created_at)
+            )
+        ).scalars().all()
+        assert len(jobs) == 3
         consumer_job = jobs[-1]
         assert "second idea" in consumer_job.prompt
         assert "first idea" not in consumer_job.prompt
@@ -123,7 +152,6 @@ async def test_approve_without_selected_idea_falls_back_to_rank1(client):
     from app.db.engine import async_session
     from app.db.models import JobRow, WorkflowRow
     from app.models.job import JobStatus
-    from app.models.workflow import WorkflowStatus
     from app.services.workflow_service import advance_workflow
 
     create = await client.post(
@@ -182,6 +210,30 @@ async def test_approve_without_selected_idea_falls_back_to_rank1(client):
     assert approve.status_code == 200
 
     async with async_session() as session:
+        # The fallback should have populated selected_idea from rank-1 in
+        # the workflow context (visible immediately after approve).
+        wf = await session.get(WorkflowRow, workflow_id)
+        ctx = json.loads(wf.context)
+        assert "selected_idea" in ctx
+        assert ctx["selected_idea"]["name"] == "default winner"
+
+        # Mark the placeholder approval job succeeded so the consumer step
+        # gets created and we can verify the rendered prompt.
+        jobs = (
+            await session.execute(
+                select(JobRow)
+                .where(JobRow.workflow_id == workflow_id)
+                .order_by(JobRow.created_at)
+            )
+        ).scalars().all()
+        approval_job = jobs[-1]
+        approval_job.status = JobStatus.SUCCEEDED.value
+        approval_job.result_data = "{}"
+        approval_job.completed_at = datetime.now(timezone.utc)
+        await session.commit()
+
+        await advance_workflow(session, workflow_id)
+
         jobs = (
             await session.execute(
                 select(JobRow)

@@ -92,8 +92,8 @@ def test_startup_pipeline_research_steps_have_output_schemas():
 
 
 def test_startup_pipeline_build_mvp_has_context_inputs():
-    """Round 2: build_mvp must prune context to only the synthesis key."""
+    """Round 3: build_mvp now reads the user's selected idea (not the full synthesis)."""
     from app.workflows.templates import STARTUP_IDEA_PIPELINE
 
     build_mvp = next(s for s in STARTUP_IDEA_PIPELINE["steps"] if s["name"] == "build_mvp")
-    assert build_mvp["context_inputs"] == ["synthesis"]
+    assert build_mvp["context_inputs"] == ["selected_idea"]
