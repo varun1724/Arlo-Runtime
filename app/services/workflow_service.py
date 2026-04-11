@@ -268,12 +268,20 @@ async def advance_workflow(session: AsyncSession, workflow_id: uuid.UUID) -> Non
         )
         await session.commit()
         logger.info("Workflow %s completed successfully", workflow_id)
-        # Round 5: if the step that just finished was build_mvp, fire the
-        # build-complete notification so the user gets an email with the
-        # workspace download link. For other terminal successes we just
-        # log — no email — to avoid noise.
-        if current_step.name == "build_mvp":
-            from app.services import notifications
+        # Round 6.A1: fire build_complete when the just-completed step is
+        # the pipeline's registered terminal step. Each user-facing
+        # pipeline registers its terminal step in
+        # notifications._TERMINAL_STEP_BY_TEMPLATE. Pipelines NOT in that
+        # map (e.g. strategy_evolution) never fire — opt-in by template_id.
+        # Round 5 hardcoded ``current_step.name == "build_mvp"`` here,
+        # which meant side hustle (terminates at ``test_run``) and
+        # freelance scanner (terminates at ``deploy_scanner``) never
+        # got the build-complete notification.
+        from app.services import notifications
+        wf_row = await session.get(WorkflowRow, workflow_id)
+        template_id = (wf_row.template_id or "").strip() if wf_row else ""
+        expected_terminal = notifications._TERMINAL_STEP_BY_TEMPLATE.get(template_id)
+        if expected_terminal and current_step.name == expected_terminal:
             await notifications.notify(session, workflow_id, "build_complete")
         return
 

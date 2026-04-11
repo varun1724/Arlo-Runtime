@@ -63,6 +63,37 @@ _SUBJECT_BY_TEMPLATE: dict[str, str] = {
     "freelance_scanner": "Pick a scanner to deploy",
 }
 
+# Round 6.A1: which step name signals "the pipeline is done, send the
+# build-complete email" for each user-facing pipeline. The Round 5
+# implementation hardcoded ``current_step.name == "build_mvp"`` in
+# advance_workflow, which meant side hustle (terminates at ``test_run``,
+# an n8n job) and freelance scanner (terminates at ``deploy_scanner``)
+# never fired the build-complete notification. Each pipeline must
+# explicitly register its terminal step here. Pipelines NOT in this
+# map (e.g. ``strategy_evolution``, which loops headlessly) never
+# fire — opt-in by template_id.
+_TERMINAL_STEP_BY_TEMPLATE: dict[str, str] = {
+    "startup_idea_pipeline": "build_mvp",
+    "side_hustle_pipeline": "test_run",
+    "freelance_scanner": "deploy_scanner",
+}
+
+# Round 6.A1: build-complete email H1 per pipeline. The Round 5 copy
+# said "Your MVP is ready" for everything — wrong for an n8n
+# automation or freelance scanner.
+_BUILD_COMPLETE_HEADLINE_BY_TEMPLATE: dict[str, str] = {
+    "startup_idea_pipeline": "Your MVP is ready",
+    "side_hustle_pipeline": "Your side hustle automation is ready",
+    "freelance_scanner": "Your freelance scanner is deployed",
+}
+
+# Round 6.A1: build-complete email subject prefix per pipeline.
+_BUILD_COMPLETE_SUBJECT_BY_TEMPLATE: dict[str, str] = {
+    "startup_idea_pipeline": "MVP ready",
+    "side_hustle_pipeline": "Side hustle automation ready",
+    "freelance_scanner": "Freelance scanner deployed",
+}
+
 
 async def notify(
     session: AsyncSession,
@@ -151,7 +182,9 @@ async def _send_approval_email(session: AsyncSession, workflow_id: uuid.UUID) ->
     # Round 5.B2/B3: pick the renderer and subject line based on the
     # workflow's template_id. Unknown templates log a warning and
     # fall back to the startup renderer for zero-regression.
-    template_id = workflow.template_id or ""
+    # Round 6.A2: .strip() to defend against accidental whitespace in
+    # the workflow.template_id column (config typos, trimming bugs).
+    template_id = (workflow.template_id or "").strip()
     renderer = _RENDERER_BY_TEMPLATE.get(
         template_id, report_renderer.render_startup_synthesis_report
     )
@@ -206,15 +239,33 @@ async def _send_build_complete_email(
         f"/workflows/{workflow_id}/artifacts.tar.gz?token={token}"
     )
 
-    # Pull the selected idea from context for the subject line
+    # Round 6.A1: pipeline-aware lookup of which context key holds
+    # the user's pick. Reuses the Round 3 dispatch dict from
+    # workflow_routes so all pipeline mappings stay in one place.
+    # Imported lazily to avoid a circular import (workflow_routes
+    # already imports from app.services).
+    from app.api.workflow_routes import _TEMPLATE_OVERRIDE_KEY
+
+    template_id = (workflow.template_id or "").strip()
+    context_key = _TEMPLATE_OVERRIDE_KEY.get(template_id, "selected_idea")
+
+    # Pull the user's pick from the right context key for this pipeline.
     context = json.loads(workflow.context)
-    selected = context.get("selected_idea") or {}
+    selected = context.get(context_key) or {}
     if isinstance(selected, str):
         try:
             selected = json.loads(selected)
         except json.JSONDecodeError:
             selected = {}
     idea_name = (selected or {}).get("name", "your selected idea") if isinstance(selected, dict) else "your selected idea"
+
+    # Round 6.A1: pipeline-aware H1 + subject prefix.
+    headline = _BUILD_COMPLETE_HEADLINE_BY_TEMPLATE.get(
+        template_id, "Your build is ready"
+    )
+    subject_prefix = _BUILD_COMPLETE_SUBJECT_BY_TEMPLATE.get(
+        template_id, "Build ready"
+    )
 
     workflow_cost_usd = await _sum_workflow_cost(session, workflow_id)
     cost_line = (
@@ -236,7 +287,7 @@ async def _send_build_complete_email(
 </style>
 </head><body>
   <div class="container">
-    <h1>Your MVP is ready</h1>
+    <h1>{headline}</h1>
     <p>Arlo finished building <strong>{idea_name}</strong>. Download the full project below.</p>
     <p><a href="{download_link}" class="button">Download tar.gz →</a></p>
     {cost_line}
@@ -245,6 +296,7 @@ async def _send_build_complete_email(
 </body></html>
 """
     text_fallback = (
+        f"{headline}\n\n"
         f"Arlo finished building {idea_name}.\n\n"
         f"Download: {download_link}\n\n"
         f"The link is valid for 48 hours.\n"
@@ -255,7 +307,7 @@ async def _send_build_complete_email(
 
     await email_sender.send_email(
         to=settings.approval_recipient_email,
-        subject=f"[arlo] MVP ready — {idea_name}"[:80],
+        subject=f"[arlo] {subject_prefix} — {idea_name}"[:80],
         html_body=html_body,
         text_fallback=text_fallback,
     )

@@ -41,15 +41,26 @@ def _apply_deep_research_mode(
     new_steps = deepcopy(steps)
     for step in new_steps:
         name = step.get("name")
+        # Shared across startup + side hustle pipelines
         if name == "contrarian_analysis":
             step["max_loop_count"] = 4  # was 2
             step["timeout_override"] = 2700  # was 1800; 45 min for deep mode
+        elif name == "synthesis_and_ranking":
+            step["timeout_override"] = 1800  # was 1200; more opps to rank
+        # Startup pipeline only
         elif name == "landscape_scan":
             step["timeout_override"] = 1800  # was 900
         elif name == "deep_dive":
             step["timeout_override"] = 2700  # was 1800; 45 min for deep mode
-        elif name == "synthesis_and_ranking":
-            step["timeout_override"] = 1800  # was 1200; more opps to rank
+        # Round 6.B1: side hustle pipeline. Same proportional bumps —
+        # research goes broader (15-20 opps vs 10-12) and feasibility
+        # has more per-opportunity competitor + unit-economics work,
+        # so the timeouts need the same headroom that landscape_scan
+        # and deep_dive get on the startup side.
+        elif name == "research_side_hustles":
+            step["timeout_override"] = 2400  # was 1800; deeper/broader search
+        elif name == "evaluate_feasibility":
+            step["timeout_override"] = 2700  # was 1800; more opps + deeper checks
     new_context = {**initial_context, "deep_mode": "true"}
     return new_steps, new_context
 
@@ -556,7 +567,13 @@ SIDE_HUSTLE_PIPELINE = {
                 "Focus: {focus}\n"
                 "Budget: {budget}\n"
                 "Skills: {skills}\n"
-                "Constraints: {constraints}\n\n"
+                "Constraints: {constraints}\n"
+                "Deep research mode: {deep_mode}\n\n"
+                "DEEP RESEARCH MODE: If 'Deep research mode' is 'true', the user is on a "
+                "Claude Max subscription and wants a more thorough pass. Aim for the HIGH END "
+                "of every count below (15-20 opportunities instead of 10-12), lean more heavily "
+                "on contrarian sources, and dig deeper into income evidence. Include at least "
+                "8 NON-OBVIOUS opportunities (not 5).\n\n"
                 "INSTRUCTIONS:\n"
                 "1. Use web search across DIVERSE source types. Don't just read "
                 "'passive income' blogs — they're saturated and the good ideas are "
@@ -668,6 +685,12 @@ SIDE_HUSTLE_PIPELINE = {
                 "web search — the prior step's 'income_evidence' is a starting "
                 "point, not gospel.\n\n"
                 "RESEARCH:\n{side_hustle_research}\n\n"
+                "Deep research mode: {deep_mode}\n\n"
+                "DEEP RESEARCH MODE: If 'Deep research mode' is 'true', the user is on Claude "
+                "Max and wants more thorough coverage. For every opportunity, run an additional "
+                "competitor search (named operators in the same niche) and dig harder on the "
+                "monthly_costs estimate (itemize at least 3 line items per opportunity). Use "
+                "the full 24-month enforcement lookback for legal_checklist, not a quick scan.\n\n"
                 "SCORE ANCHORS (integer 1-10 per dimension):\n\n"
                 "revenue_potential — realistic monthly net after costs:\n"
                 "  1  = <$100/mo, or no clear path to paying customers\n"
@@ -783,6 +806,12 @@ SIDE_HUSTLE_PIPELINE = {
                 "or get shut down. Vague risks are useless — every claim needs a "
                 "specific name, date, or URL.\n\n"
                 "FEASIBILITY EVALUATION:\n{feasibility}\n\n"
+                "Deep research mode: {deep_mode}\n\n"
+                "DEEP RESEARCH MODE: If 'Deep research mode' is 'true', the user is on Claude "
+                "Max. Find at least 2 named failed predecessors per opportunity (not just 1), "
+                "extend the platform crackdown lookback from 24 to 36 months, and require "
+                "primary-source income evidence for any 'survives' verdict (no moderate-strength "
+                "evidence allowed in the top tier in deep mode).\n\n"
                 "INSTRUCTIONS:\nFor EACH opportunity, use web search to investigate:\n\n"
                 "1. NAMED FAILED PREDECESSORS: Find SPECIFIC people or businesses that "
                 "tried this exact side hustle and failed.\n"
@@ -897,6 +926,12 @@ SIDE_HUSTLE_PIPELINE = {
                 "RESEARCH:\n{side_hustle_research}\n\n"
                 "FEASIBILITY:\n{feasibility}\n\n"
                 "CONTRARIAN:\n{contrarian}\n\n"
+                "Deep research mode: {deep_mode}\n\n"
+                "DEEP RESEARCH MODE: If 'Deep research mode' is 'true', the user is on Claude "
+                "Max. Rank up to 7 opportunities in final_rankings (instead of capping at 5), "
+                "and write a full n8n_workflow_spec for ALL of them (not just the top 5). The "
+                "executive_summary should also be 3-4 paragraphs instead of 2-3, with explicit "
+                "comparison across the top 3 picks.\n\n"
                 "INSTRUCTIONS:\n\n"
                 "1. ONLY include opportunities with 'survives' or 'weakened' verdicts. "
                 "Drop everything that was 'killed' in the contrarian step.\n\n"

@@ -8,6 +8,7 @@ the context gets substituted properly at render time.
 from __future__ import annotations
 
 from app.workflows.templates import (
+    SIDE_HUSTLE_PIPELINE,
     STARTUP_IDEA_PIPELINE,
     _apply_deep_research_mode,
 )
@@ -144,3 +145,58 @@ def test_request_accepts_deep_research_mode_true():
         deep_research_mode=True,
     )
     assert req.deep_research_mode is True
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 6.B1/B2/B3: side hustle pipeline deep research mode parity
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_apply_deep_mode_bumps_side_hustle_research_timeout():
+    """Round 6.B1: research_side_hustles gets 2400s in deep mode
+    (was 1800s) so the broader 15-20-opportunity search has headroom."""
+    steps, _ = _apply_deep_research_mode(SIDE_HUSTLE_PIPELINE["steps"], {})
+    research = next(s for s in steps if s["name"] == "research_side_hustles")
+    assert research["timeout_override"] == 2400
+
+
+def test_apply_deep_mode_bumps_side_hustle_feasibility_timeout():
+    """Round 6.B1: evaluate_feasibility gets 2700s in deep mode
+    (was 1800s) — same proportional bump as deep_dive on the
+    startup pipeline."""
+    steps, _ = _apply_deep_research_mode(SIDE_HUSTLE_PIPELINE["steps"], {})
+    feasibility = next(s for s in steps if s["name"] == "evaluate_feasibility")
+    assert feasibility["timeout_override"] == 2700
+
+
+def test_apply_deep_mode_still_bumps_contrarian_for_side_hustle():
+    """Round 6.B1 regression guard: contrarian_analysis bump still
+    fires for the side hustle template (same step name as startup,
+    so the shared branch should match)."""
+    steps, _ = _apply_deep_research_mode(SIDE_HUSTLE_PIPELINE["steps"], {})
+    contrarian = next(s for s in steps if s["name"] == "contrarian_analysis")
+    assert contrarian["max_loop_count"] == 4
+    assert contrarian["timeout_override"] == 2700
+
+
+def test_side_hustle_prompts_contain_deep_mode_placeholders():
+    """Round 6.B2: each of the 4 side hustle research prompts must
+    reference {deep_mode} so the context substitution actually fires
+    at render time, AND must contain a DEEP RESEARCH MODE instruction
+    block so Claude knows what to do when the flag is true."""
+    research_step_names = (
+        "research_side_hustles",
+        "evaluate_feasibility",
+        "contrarian_analysis",
+        "synthesis_and_ranking",
+    )
+    for name in research_step_names:
+        step = next(
+            s for s in SIDE_HUSTLE_PIPELINE["steps"] if s["name"] == name
+        )
+        assert "{deep_mode}" in step["prompt_template"], (
+            f"Round 6.B2: {name} prompt missing {{deep_mode}} placeholder"
+        )
+        assert "DEEP RESEARCH MODE" in step["prompt_template"], (
+            f"Round 6.B2: {name} prompt missing DEEP RESEARCH MODE block"
+        )

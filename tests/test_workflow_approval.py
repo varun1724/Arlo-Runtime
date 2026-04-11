@@ -834,3 +834,158 @@ async def test_side_hustle_approve_via_link_unknown_template_falls_back_to_selec
         # Unknown template_id falls back to selected_idea
         assert "selected_idea" in ctx
         assert ctx["selected_idea"]["name"] == "alpha"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 6.A1: build_complete dispatch is pipeline-aware
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_build_complete_fires_for_side_hustle_terminal_test_run(client):
+    """Round 6.A1: a side_hustle_pipeline workflow whose final step is
+    `test_run` (an n8n job, requires_approval=True) must fire the
+    build_complete notification when test_run succeeds and the
+    workflow advances past it. Round 5 hardcoded `build_mvp` so this
+    notification was dead code for every side hustle run."""
+    from unittest.mock import AsyncMock, patch
+
+    from sqlalchemy import select
+
+    from app.db.engine import async_session
+    from app.db.models import JobRow
+    from app.models.job import JobStatus
+    from app.services.workflow_service import advance_workflow
+
+    create = await client.post(
+        "/workflows",
+        json={
+            "name": "side_hustle_a1_test",
+            "template_id": "side_hustle_pipeline",
+            "steps": [
+                {
+                    "name": "fake_test_run",
+                    "job_type": "research",
+                    "prompt_template": "stand-in for build_n8n_workflow",
+                    "output_key": "build_result",
+                },
+                # Final step has the registered terminal name for
+                # side_hustle_pipeline. job_type is "research" instead
+                # of "n8n" to keep the test free of n8n executor wiring.
+                {
+                    "name": "test_run",
+                    "job_type": "research",
+                    "prompt_template": "stand-in for n8n test_run",
+                    "output_key": "test_result",
+                },
+            ],
+            "initial_context": {},
+        },
+    )
+    assert create.status_code == 201, create.text
+    workflow_id = uuid.UUID(create.json()["id"])
+
+    async with async_session() as session:
+        first = (
+            await session.execute(
+                select(JobRow)
+                .where(JobRow.workflow_id == workflow_id)
+                .order_by(JobRow.created_at)
+            )
+        ).scalars().first()
+        first.status = JobStatus.SUCCEEDED.value
+        first.result_data = "{}"
+        first.completed_at = datetime.now(timezone.utc)
+        await session.commit()
+
+        # Advance to create the test_run job
+        await advance_workflow(session, workflow_id)
+
+        jobs = (
+            await session.execute(
+                select(JobRow)
+                .where(JobRow.workflow_id == workflow_id)
+                .order_by(JobRow.created_at)
+            )
+        ).scalars().all()
+        terminal_job = jobs[-1]
+        assert terminal_job.step_index == 1
+        terminal_job.status = JobStatus.SUCCEEDED.value
+        terminal_job.result_data = "{}"
+        terminal_job.completed_at = datetime.now(timezone.utc)
+        await session.commit()
+
+        # Patch notify so we can observe what advance_workflow fires
+        # when the terminal step succeeds. (The dispatcher itself is a
+        # no-op when approval_recipient_email is blank, but we want to
+        # know notify() was CALLED with build_complete.)
+        with patch(
+            "app.services.notifications.notify",
+            new=AsyncMock(),
+        ) as notify_mock:
+            await advance_workflow(session, workflow_id)
+
+        # The notification was triggered for "build_complete"
+        events = [c.args[2] for c in notify_mock.call_args_list]
+        assert "build_complete" in events, (
+            f"build_complete was not fired for side hustle terminal test_run; "
+            f"observed events: {events}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_build_complete_does_not_fire_for_unregistered_template(client):
+    """Round 6.A1: a workflow with a template_id NOT in
+    _TERMINAL_STEP_BY_TEMPLATE (e.g. ``strategy_evolution``) must NOT
+    fire build_complete on terminal success. The notification is
+    explicitly opt-in per pipeline."""
+    from unittest.mock import AsyncMock, patch
+
+    from sqlalchemy import select
+
+    from app.db.engine import async_session
+    from app.db.models import JobRow
+    from app.models.job import JobStatus
+    from app.services.workflow_service import advance_workflow
+
+    create = await client.post(
+        "/workflows",
+        json={
+            "name": "unregistered_template_no_notify",
+            "template_id": "strategy_evolution",
+            "steps": [
+                {
+                    "name": "some_terminal_step",
+                    "job_type": "research",
+                    "prompt_template": "x",
+                    "output_key": "y",
+                },
+            ],
+            "initial_context": {},
+        },
+    )
+    assert create.status_code == 201, create.text
+    workflow_id = uuid.UUID(create.json()["id"])
+
+    async with async_session() as session:
+        only_job = (
+            await session.execute(
+                select(JobRow).where(JobRow.workflow_id == workflow_id)
+            )
+        ).scalars().one()
+        only_job.status = JobStatus.SUCCEEDED.value
+        only_job.result_data = "{}"
+        only_job.completed_at = datetime.now(timezone.utc)
+        await session.commit()
+
+        with patch(
+            "app.services.notifications.notify",
+            new=AsyncMock(),
+        ) as notify_mock:
+            await advance_workflow(session, workflow_id)
+
+        events = [c.args[2] for c in notify_mock.call_args_list]
+        assert "build_complete" not in events, (
+            f"build_complete was fired for unregistered template_id; "
+            f"that should be opt-in only. Events: {events}"
+        )

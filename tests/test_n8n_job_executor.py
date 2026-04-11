@@ -653,3 +653,164 @@ async def test_execute_sanitizes_datetime_in_webhook_response():
         assert "2026" in wh["created_at"]
         # Non-exotic values are preserved
         assert wh["items"] == [1, 2, 3]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 6.A3: _sanitize_for_json handles circular references
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_sanitize_for_json_handles_self_referential_dict():
+    """Round 6.A3: a dict that contains itself as a value (e.g. a
+    webhook response built dynamically with a 'self' link) must NOT
+    blow the stack with RecursionError. The sanitizer should detect
+    the cycle and replace the second visit with a marker string."""
+    from app.jobs.n8n import _sanitize_for_json
+
+    cyclic: dict = {"name": "outer", "items": [1, 2, 3]}
+    cyclic["self"] = cyclic  # immediate self-reference
+
+    result = _sanitize_for_json(cyclic)
+
+    # No crash, returns a dict, primitives preserved
+    assert isinstance(result, dict)
+    assert result["name"] == "outer"
+    assert result["items"] == [1, 2, 3]
+    # The cyclic edge is replaced with a marker, not the original dict
+    assert result["self"] == "<circular reference>"
+
+
+def test_sanitize_for_json_handles_nested_cycle_in_list():
+    """A cycle that goes dict → list → back to the same dict must
+    also terminate cleanly."""
+    from app.jobs.n8n import _sanitize_for_json
+
+    inner: dict = {"id": "abc"}
+    container: dict = {"children": [inner]}
+    inner["parent"] = container  # back-reference closes the cycle
+
+    result = _sanitize_for_json(container)
+
+    assert isinstance(result, dict)
+    assert isinstance(result["children"], list)
+    child = result["children"][0]
+    assert child["id"] == "abc"
+    assert child["parent"] == "<circular reference>"
+
+
+def test_sanitize_for_json_does_not_mark_repeated_independent_objects():
+    """Two distinct dicts with identical content must NOT be flagged
+    as cyclic — _seen tracks ids on the current branch, not all
+    objects ever seen. The id() set is local to one recursive call."""
+    from app.jobs.n8n import _sanitize_for_json
+
+    shared = {"a": 1}
+    parent = {"first": shared, "second": shared}
+
+    result = _sanitize_for_json(parent)
+
+    # The same object reused at the same depth is fine — only an
+    # ancestor reference counts as a cycle. Both copies should be
+    # rendered fully (not as the marker).
+    assert result == {"first": {"a": 1}, "second": {"a": 1}}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 6.A4: sanitizer exception path stores diagnostic fallback
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_finalize_falls_back_when_sanitizer_itself_raises():
+    """Round 6.A4: if json.dumps(result) raises TypeError AND the
+    follow-up _sanitize_for_json call also raises (e.g. an exotic
+    __str__ method blew up), the finalize block must still produce
+    a valid JSON result_data via a last-ditch dict — never let the
+    exception escape to the outer catch-all that reports a generic
+    'n8n job failed unexpectedly'."""
+    from app.db.engine import async_session
+    from app.db.models import JobRow, WorkflowRow
+    from app.jobs.n8n import execute_n8n_job
+
+    wf_id = uuid.uuid4()
+    deploy_job_id = uuid.uuid4()
+    test_job_id = uuid.uuid4()
+
+    async with async_session() as session:
+        session.add(WorkflowRow(
+            id=wf_id, name="a4-double-fallback",
+            status="running", context="{}",
+            step_definitions="[]", current_step_index=1,
+        ))
+        await session.commit()
+
+    async with async_session() as session:
+        session.add(JobRow(
+            id=deploy_job_id,
+            job_type="n8n",
+            status="succeeded",
+            prompt="deploy",
+            workflow_id=wf_id,
+            step_index=0,
+            result_data=json.dumps({
+                "n8n_workflow_id": "wf-double-fallback",
+                "webhook_url": "http://n8n:5678/webhook/double",
+            }),
+            started_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc),
+        ))
+        session.add(JobRow(
+            id=test_job_id,
+            job_type="n8n",
+            status="running",
+            prompt=json.dumps({
+                "action": "execute",
+                "from_previous_deploy": True,
+            }),
+            workflow_id=wf_id,
+            step_index=1,
+            started_at=datetime.now(timezone.utc),
+        ))
+        await session.commit()
+
+        # Webhook response contains a datetime so json.dumps(result)
+        # raises TypeError, forcing the executor into the sanitize
+        # branch. We then patch _sanitize_for_json itself to raise
+        # so the inner try/except A4 wraps gets exercised.
+        exotic_timestamp = datetime(2026, 4, 11, 12, 0, 0, tzinfo=timezone.utc)
+        mock_client = AsyncMock()
+        mock_client.trigger_webhook = AsyncMock(
+            return_value={
+                "_status_code": 200,
+                "created_at": exotic_timestamp,
+            }
+        )
+        mock_client.get_latest_execution_for_workflow = AsyncMock(return_value=None)
+
+        from sqlalchemy import select
+        row_result = await session.execute(
+            select(JobRow).where(JobRow.id == test_job_id)
+        )
+        job_row = row_result.scalars().first()
+
+        with _patch_n8n_client(mock_client), \
+             patch("app.jobs.n8n.asyncio.sleep", new=AsyncMock()), \
+             patch(
+                 "app.jobs.n8n._sanitize_for_json",
+                 side_effect=ValueError("simulated sanitizer crash"),
+             ):
+            await execute_n8n_job(session, job_row)
+
+        row_result = await session.execute(
+            select(JobRow).where(JobRow.id == test_job_id)
+        )
+        updated = row_result.scalars().first()
+
+        # The job must NOT crash with the outer catch-all. Either it
+        # succeeded with the diagnostic payload, or it was finalized
+        # with execution_status=error — but in both cases result_data
+        # must be a valid JSON string with the A4 marker fields.
+        assert updated.result_data is not None
+        payload = json.loads(updated.result_data)
+        assert payload.get("_sanitizer_failed") is True
+        assert "simulated sanitizer crash" in payload.get("_sanitizer_error", "")

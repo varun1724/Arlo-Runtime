@@ -363,3 +363,155 @@ async def test_dispatcher_falls_back_to_startup_for_unknown_template():
 
     # The startup renderer was called as the fallback — no crash
     st_mock.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 6.A5: cross-dict consistency
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_dispatch_dicts_have_consistent_template_ids():
+    """Round 6.A5: every pipeline-dispatch dict in the codebase must
+    list the SAME set of template_ids. _TEMPLATE_OVERRIDE_KEY (in
+    workflow_routes.py) is the canonical source — every other dict
+    must match its keys exactly. A future pipeline added to one but
+    not all of these would silently misbehave (wrong renderer, wrong
+    subject, no terminal notification, build-complete email reads
+    the wrong context key, etc.), so this test enforces consistency
+    at import time."""
+    from app.api.workflow_routes import _TEMPLATE_OVERRIDE_KEY
+    from app.services.notifications import (
+        _BUILD_COMPLETE_HEADLINE_BY_TEMPLATE,
+        _BUILD_COMPLETE_SUBJECT_BY_TEMPLATE,
+        _RENDERER_BY_TEMPLATE,
+        _SUBJECT_BY_TEMPLATE,
+        _TERMINAL_STEP_BY_TEMPLATE,
+    )
+
+    canonical = set(_TEMPLATE_OVERRIDE_KEY.keys())
+    other_dicts = {
+        "_RENDERER_BY_TEMPLATE": _RENDERER_BY_TEMPLATE,
+        "_SUBJECT_BY_TEMPLATE": _SUBJECT_BY_TEMPLATE,
+        "_TERMINAL_STEP_BY_TEMPLATE": _TERMINAL_STEP_BY_TEMPLATE,
+        "_BUILD_COMPLETE_HEADLINE_BY_TEMPLATE": _BUILD_COMPLETE_HEADLINE_BY_TEMPLATE,
+        "_BUILD_COMPLETE_SUBJECT_BY_TEMPLATE": _BUILD_COMPLETE_SUBJECT_BY_TEMPLATE,
+    }
+    for name, d in other_dicts.items():
+        assert set(d.keys()) == canonical, (
+            f"{name} keys drifted from _TEMPLATE_OVERRIDE_KEY:\n"
+            f"  canonical:  {sorted(canonical)}\n"
+            f"  {name}: {sorted(d.keys())}\n"
+            f"Add the missing template_ids to whichever dict is short."
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 6.A2: whitespace template_id is stripped before dispatch lookup
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_strips_whitespace_from_template_id():
+    """Round 6.A2: a workflow with whitespace-padded template_id (e.g.
+    '  side_hustle_pipeline  ' from a config typo) must still route to
+    the correct renderer. Without .strip() the dict lookup falls back
+    silently to the startup renderer."""
+    from tests.fixtures.side_hustle_fixtures import VALID_SIDE_HUSTLE_SYNTHESIS
+
+    wf_id = uuid.uuid4()
+    row = _fake_workflow_row(
+        wf_id,
+        context={"synthesis": json.dumps(VALID_SIDE_HUSTLE_SYNTHESIS)},
+        template_id="  side_hustle_pipeline  ",
+    )
+    session = _fake_session(row, cost_total=0.1)
+
+    with patch.object(notifications.settings, "approval_recipient_email", "me@example.com"), \
+         patch.object(
+             notifications.report_renderer,
+             "render_side_hustle_synthesis_report",
+             return_value=("<html>side hustle</html>", "sh text", b"%PDF-sh"),
+         ) as sh_mock, \
+         patch.object(
+             notifications.report_renderer,
+             "render_startup_synthesis_report",
+             return_value=("<html>startup</html>", "st text", b"%PDF-st"),
+         ) as st_mock, \
+         patch.object(notifications.email_sender, "send_email", new=AsyncMock()) as send_mock:
+        with patch.dict(
+            notifications._RENDERER_BY_TEMPLATE,
+            {
+                "side_hustle_pipeline": sh_mock,
+                "startup_idea_pipeline": st_mock,
+            },
+            clear=False,
+        ):
+            await notifications.notify(session, wf_id, "awaiting_approval")
+
+    sh_mock.assert_called_once()
+    st_mock.assert_not_called()
+    assert send_mock.call_count == 1
+    assert "side hustle" in send_mock.call_args.kwargs["subject"].lower()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 6.A1: build-complete email is pipeline-aware
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_build_complete_uses_selected_hustle_for_side_hustle_template():
+    """Round 6.A1: the build-complete email for a side_hustle_pipeline
+    workflow must read from ``selected_hustle`` (not ``selected_idea``)
+    and use the side hustle headline + subject prefix."""
+    wf_id = uuid.uuid4()
+    selected = {"name": "Reddit deal scanner"}
+    row = _fake_workflow_row(
+        wf_id,
+        context={"selected_hustle": selected},
+        template_id="side_hustle_pipeline",
+    )
+    session = _fake_session(row, cost_total=0.42)
+
+    with patch.object(notifications.settings, "approval_recipient_email", "me@example.com"):
+        with patch.object(notifications.email_sender, "send_email", new=AsyncMock()) as send_mock:
+            await notifications.notify(session, wf_id, "build_complete")
+
+    assert send_mock.call_count == 1
+    kwargs = send_mock.call_args.kwargs
+    # Subject prefix is the side-hustle one, not the startup "MVP ready"
+    assert "Side hustle automation ready" in kwargs["subject"]
+    assert "Reddit deal scanner" in kwargs["subject"]
+    # H1 in the body is the side-hustle headline
+    assert "Your side hustle automation is ready" in kwargs["html_body"]
+    # The text fallback echoes the side-hustle headline + the picked name
+    assert "side hustle" in kwargs["text_fallback"].lower()
+    assert "Reddit deal scanner" in kwargs["text_fallback"]
+
+
+@pytest.mark.asyncio
+async def test_build_complete_uses_selected_idea_for_startup_template():
+    """Round 6.A1 regression: explicit startup template_id still uses
+    selected_idea + 'MVP ready' subject + 'Your MVP is ready' headline.
+    The Round 5 test path covered the implicit None case; this one
+    pins the explicit case so the dispatch can't drift."""
+    wf_id = uuid.uuid4()
+    selected = {"name": "Build pipeline analytics"}
+    row = _fake_workflow_row(
+        wf_id,
+        context={"selected_idea": selected},
+        template_id="startup_idea_pipeline",
+    )
+    session = _fake_session(row, cost_total=0.5)
+
+    with patch.object(notifications.settings, "approval_recipient_email", "me@example.com"):
+        with patch.object(notifications.email_sender, "send_email", new=AsyncMock()) as send_mock:
+            await notifications.notify(session, wf_id, "build_complete")
+
+    assert send_mock.call_count == 1
+    kwargs = send_mock.call_args.kwargs
+    assert "MVP ready" in kwargs["subject"]
+    assert "Build pipeline analytics" in kwargs["subject"]
+    assert "Your MVP is ready" in kwargs["html_body"]
+    # Make sure the side-hustle copy did NOT leak in
+    assert "side hustle" not in kwargs["html_body"].lower()

@@ -69,7 +69,7 @@ _POLL_EXECUTION_ROW_RETRIES = 6
 _POLL_EXECUTION_ROW_DELAY = 1.0
 
 
-def _sanitize_for_json(obj):
+def _sanitize_for_json(obj, _seen: set[int] | None = None):
     """Round 5.A4: defensive pass to coerce any non-JSON-serializable
     values to str so the finalize step never crashes on exotic webhook
     responses.
@@ -83,13 +83,39 @@ def _sanitize_for_json(obj):
     This is called only from the fallback path of the finalize step —
     if the initial ``json.dumps(result)`` succeeds, we never walk the
     result dict. That keeps the happy path cheap.
+
+    Round 6.A3: ``_seen`` is a set of container ``id()`` values walked
+    on the current branch. If a container is encountered twice (a
+    cycle), it's replaced with the string ``"<circular reference>"``
+    instead of recursing forever and blowing the Python stack with a
+    RecursionError. The original Round 5 implementation didn't track
+    visited objects, so a webhook response with a self-reference (e.g.
+    ``r = {}; r["self"] = r``) would crash the executor with an opaque
+    error that escapes the TypeError handler in finalize.
     """
     if obj is None or isinstance(obj, (bool, int, float, str)):
         return obj
+
+    if _seen is None:
+        _seen = set()
+    obj_id = id(obj)
+    if obj_id in _seen:
+        return "<circular reference>"
+
     if isinstance(obj, dict):
-        return {str(k): _sanitize_for_json(v) for k, v in obj.items()}
+        _seen.add(obj_id)
+        try:
+            return {
+                str(k): _sanitize_for_json(v, _seen) for k, v in obj.items()
+            }
+        finally:
+            _seen.discard(obj_id)
     if isinstance(obj, (list, tuple)):
-        return [_sanitize_for_json(v) for v in obj]
+        _seen.add(obj_id)
+        try:
+            return [_sanitize_for_json(v, _seen) for v in obj]
+        finally:
+            _seen.discard(obj_id)
     return str(obj)
 
 
@@ -380,7 +406,29 @@ async def execute_n8n_job(session: AsyncSession, job: JobRow) -> None:
                 "values, coercing to str: %s",
                 job.id, e,
             )
-            result_json = json.dumps(_sanitize_for_json(result))
+            try:
+                result_json = json.dumps(_sanitize_for_json(result))
+            except Exception as sanitize_exc:
+                # Round 6.A4: the sanitizer itself failed (an exotic
+                # __str__ raised, a circular ref slipped through, etc).
+                # Without this guard the exception would escape to the
+                # outer ``except Exception`` handler at the bottom of
+                # the function, which reports a generic "n8n job failed
+                # unexpectedly" — losing the actual diagnostic context.
+                # Last-ditch fallback: emit a minimal valid JSON blob
+                # that preserves the original TypeError + the sanitizer
+                # error so an operator can diagnose via logs/result_data.
+                logger.error(
+                    "n8n job %s: sanitizer also failed (%s: %s); "
+                    "storing minimal result_data so finalize can proceed",
+                    job.id, type(sanitize_exc).__name__, sanitize_exc,
+                )
+                result_json = json.dumps({
+                    "_sanitizer_failed": True,
+                    "_original_error": str(e)[:500],
+                    "_sanitizer_error": str(sanitize_exc)[:500],
+                    "execution_status": result.get("execution_status", "error"),
+                })
         preview = _build_preview(result)
 
         # If the execute phase ran and returned a non-2xx, fail the job
