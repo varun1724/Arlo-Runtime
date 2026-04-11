@@ -89,17 +89,23 @@ async def test_list_workflows_hits_correct_endpoint():
 
 @pytest.mark.asyncio
 async def test_create_workflow_hits_correct_endpoint():
+    """Pass a workflow WITH settings so this test is about the endpoint
+    path, not the Round 4 Phase 0 settings injection. The injection
+    behavior has dedicated tests further down
+    (test_create_workflow_injects_empty_settings_when_missing)."""
     ctx, mock = _mock_httpx_client(
         _mock_response(200, json_body={"id": "new-wf", "name": "test"})
     )
     with ctx:
         client = N8nClient()
-        result = await client.create_workflow({"name": "test", "nodes": []})
+        result = await client.create_workflow(
+            {"name": "test", "nodes": [], "settings": {}}
+        )
 
     args, kwargs = mock.request.call_args
     assert args[0] == "POST"
     assert args[1].endswith("/api/v1/workflows")
-    assert kwargs["json"] == {"name": "test", "nodes": []}
+    assert kwargs["json"] == {"name": "test", "nodes": [], "settings": {}}
     assert result["id"] == "new-wf"
 
 

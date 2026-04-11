@@ -7,6 +7,16 @@ exercise the actual SQL they'd run in production.
 Scope: the happy paths for create+activate (deploy step) and
 webhook-trigger (test step), plus the error paths for missing
 workflow JSON, missing webhook URL, and API errors.
+
+Mocking gotcha: ``patch("app.jobs.n8n.N8nClient", return_value=...)``
+replaces the whole class reference in the executor module, including
+static methods. The executor calls
+``N8nClient.extract_webhook_url_from_workflow(...)`` as a static
+method — if we don't forward that call to the real implementation,
+the patched class returns a MagicMock for it, which then gets stored
+in ``result`` and crashes ``json.dumps`` at the finalize step. The
+``_patch_n8n_client`` helper below delegates the static method to the
+real implementation so tests don't have to think about it.
 """
 
 from __future__ import annotations
@@ -14,11 +24,40 @@ from __future__ import annotations
 import json
 import tempfile
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from app.tools.n8n import N8nClient as _RealN8nClient
+
+
+@contextmanager
+def _patch_n8n_client(mock_instance):
+    """Patch the executor's N8nClient reference while keeping the real
+    static methods working.
+
+    Returns a context manager that patches ``app.jobs.n8n.N8nClient``
+    so that (a) instantiating it returns ``mock_instance`` and
+    (b) accessing static methods on the class forwards to the real
+    implementations. Without (b), calls like
+    ``N8nClient.extract_webhook_url_from_workflow(wf)`` hit a MagicMock
+    and return junk that pollutes the job result dict.
+    """
+    with patch("app.jobs.n8n.N8nClient") as patched_cls:
+        patched_cls.return_value = mock_instance
+        # Delegate static methods to the real implementation so calls
+        # like N8nClient.extract_webhook_url_from_workflow(...) return
+        # real URLs instead of MagicMocks that break json.dumps.
+        patched_cls.extract_webhook_url_from_workflow = (
+            _RealN8nClient.extract_webhook_url_from_workflow
+        )
+        patched_cls.validate_workflow_json = (
+            _RealN8nClient.validate_workflow_json
+        )
+        yield patched_cls
 
 
 @pytest.mark.asyncio
@@ -84,7 +123,7 @@ async def test_create_step_extracts_and_stores_webhook_url():
         )
         mock_client.activate_workflow = AsyncMock(return_value={"active": True})
 
-        with patch("app.jobs.n8n.N8nClient", return_value=mock_client):
+        with _patch_n8n_client(mock_client):
             # Re-fetch the job because the executor takes a JobRow
             from sqlalchemy import select
             result = await session.execute(select(JobRow).where(JobRow.id == job_id))
@@ -185,13 +224,22 @@ async def test_execute_step_reads_webhook_url_from_previous_deploy():
             session.add(test_job)
             await session.commit()
 
-            # Mock trigger_webhook to return a happy response
+            # Mock trigger_webhook to return a happy response and
+            # get_latest_execution_for_workflow to return None so the
+            # executor's "no execution row found" branch fires (which
+            # reports success based on the webhook 2xx). Without this
+            # explicit mock, the attribute access on AsyncMock returns
+            # a nested mock and the polling block stores it in result,
+            # which then crashes json.dumps at finalize.
             mock_client = AsyncMock()
             mock_client.trigger_webhook = AsyncMock(
                 return_value={"_status_code": 200, "ok": True}
             )
+            mock_client.get_latest_execution_for_workflow = AsyncMock(
+                return_value=None
+            )
 
-            with patch("app.jobs.n8n.N8nClient", return_value=mock_client):
+            with _patch_n8n_client(mock_client):
                 from sqlalchemy import select
                 result = await session.execute(
                     select(JobRow).where(JobRow.id == test_job_id)
@@ -257,7 +305,7 @@ async def test_execute_step_fails_when_no_webhook_url():
         await session.commit()
 
         mock_client = AsyncMock()
-        with patch("app.jobs.n8n.N8nClient", return_value=mock_client):
+        with _patch_n8n_client(mock_client):
             from sqlalchemy import select
             result = await session.execute(select(JobRow).where(JobRow.id == job_id))
             job_row = result.scalars().first()
@@ -327,7 +375,7 @@ async def test_execute_step_fails_when_webhook_returns_non_2xx():
         mock_client.trigger_webhook = AsyncMock(
             return_value={"_status_code": 500, "error": "upstream failure"}
         )
-        with patch("app.jobs.n8n.N8nClient", return_value=mock_client):
+        with _patch_n8n_client(mock_client):
             from sqlalchemy import select
             result = await session.execute(select(JobRow).where(JobRow.id == job_id))
             job_row = result.scalars().first()
@@ -378,7 +426,7 @@ async def test_create_step_fails_with_no_workflow_json():
         await session.commit()
 
         mock_client = AsyncMock()
-        with patch("app.jobs.n8n.N8nClient", return_value=mock_client):
+        with _patch_n8n_client(mock_client):
             from sqlalchemy import select
             result = await session.execute(select(JobRow).where(JobRow.id == job_id))
             job_row = result.scalars().first()
@@ -411,7 +459,7 @@ async def test_invalid_prompt_json_fails_cleanly():
         await session.commit()
 
         mock_client = AsyncMock()
-        with patch("app.jobs.n8n.N8nClient", return_value=mock_client):
+        with _patch_n8n_client(mock_client):
             from sqlalchemy import select
             result = await session.execute(select(JobRow).where(JobRow.id == job_id))
             job_row = result.scalars().first()
