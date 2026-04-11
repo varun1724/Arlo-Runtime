@@ -47,6 +47,40 @@ _LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 
 
+def _build_parse_error_window(text: str, pos: int, radius: int = 120) -> str:
+    """Round 6 followup: build a human-readable diagnostic showing what
+    surrounds the JSON parse error position.
+
+    Returns a one-line description that classifies the error as either
+    truncation (parse position is within ``radius`` of the end) or a
+    mid-document parse failure, and includes the actual characters
+    immediately before the error position so the operator can see
+    whether Claude wrote a half-string, a trailing comma, or simply
+    stopped writing.
+    """
+    if not text:
+        return "Window: <empty>"
+    total = len(text)
+    pos = max(0, min(pos, total))
+    distance_from_end = total - pos
+    is_truncation = distance_from_end <= radius
+
+    start = max(0, pos - radius)
+    end = min(total, pos + radius)
+    before = text[start:pos].replace("\n", "\\n")
+    after = text[pos:end].replace("\n", "\\n")
+
+    classification = (
+        f"LIKELY TRUNCATION ({distance_from_end} chars from end of {total})"
+        if is_truncation
+        else f"mid-document parse error ({distance_from_end} chars from end of {total})"
+    )
+    return (
+        f"{classification} | "
+        f"...{before!r} <<HERE>> {after!r}..."
+    )
+
+
 def _sanitize_json_payload(payload: str) -> str:
     """Strip Claude's JS-isms from an extracted JSON payload.
 
@@ -421,16 +455,26 @@ def _extract_result(
             # 109 (char 20794)" in a deep_dive opportunity's description.
             content = json.loads(cleaned, strict=False)
         except json.JSONDecodeError as e:
+            # Round 6 followup: include a window AROUND the parse error
+            # position so truncation is instantly diagnosable. Without
+            # this, the error message only showed the first 200 chars
+            # which is useless when a 33k-char output gets truncated
+            # at char 33,226. Knowing whether the failure is at the
+            # very end (truncation) vs. mid-string (escaping bug) tells
+            # us whether to bump tokens or fix the prompt.
+            error_window = _build_parse_error_window(cleaned, e.pos)
             if raw_mode and schema_cls is not None:
                 # Strict mode: JSON parse failure is a hard error
                 raise ClaudeRunError(
                     f"Output validation failed: response was not valid JSON ({e}). "
+                    f"Total length: {len(cleaned)} chars. {error_window} "
                     f"First 200 chars: {cleaned[:200]}"
                 ) from e
             if not raw_mode:
                 # Standalone mode also expects valid JSON for ResearchReport
                 raise ClaudeRunError(
                     f"Output validation failed: response was not valid JSON ({e}). "
+                    f"Total length: {len(cleaned)} chars. {error_window} "
                     f"First 200 chars: {cleaned[:200]}"
                 ) from e
             # Loose workflow mode: legacy fallback
