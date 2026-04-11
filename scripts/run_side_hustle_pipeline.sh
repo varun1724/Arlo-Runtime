@@ -8,6 +8,20 @@ BUDGET="${2:-under 50 dollars per month}"
 SKILLS="${3:-Python, APIs, web scraping}"
 CONSTRAINTS="${4:-must be legal, no spam}"
 
+# Round 6.B1/B2: deep research mode opt-in. Set ARLO_DEEP_MODE=1 to
+# enable broader research (15-20 opportunities instead of 10-12,
+# longer step timeouts, more contrarian sourcing, 7 final rankings
+# instead of 5). Recommended ON for Claude Max users where token
+# cost is effectively zero.
+DEEP_MODE_FLAG="false"
+DEEP_MODE_LABEL="off"
+case "${ARLO_DEEP_MODE:-}" in
+  1|true|TRUE|yes|YES|on|ON)
+    DEEP_MODE_FLAG="true"
+    DEEP_MODE_LABEL="ON"
+    ;;
+esac
+
 echo "============================================"
 echo "  Side Hustle Automation Pipeline"
 echo "============================================"
@@ -15,16 +29,37 @@ echo "  Focus: $FOCUS"
 echo "  Budget: $BUDGET"
 echo "  Skills: $SKILLS"
 echo "  Constraints: $CONSTRAINTS"
+echo "  Deep research mode: $DEEP_MODE_LABEL"
 echo ""
 echo "  This pipeline runs 4 research passes then"
 echo "  builds and deploys an n8n workflow."
 echo "============================================"
 echo ""
 
+# Build the JSON body via a python heredoc so the focus/budget/skills/
+# constraints strings can contain arbitrary punctuation (em dashes,
+# quotes, commas) without breaking the curl call.
+REQUEST_BODY=$(
+  FOCUS="$FOCUS" BUDGET="$BUDGET" SKILLS="$SKILLS" \
+  CONSTRAINTS="$CONSTRAINTS" DEEP_MODE_FLAG="$DEEP_MODE_FLAG" \
+  python3 -c "
+import json, os
+print(json.dumps({
+    'initial_context': {
+        'focus':       os.environ['FOCUS'],
+        'budget':      os.environ['BUDGET'],
+        'skills':      os.environ['SKILLS'],
+        'constraints': os.environ['CONSTRAINTS'],
+    },
+    'deep_research_mode': os.environ['DEEP_MODE_FLAG'] == 'true',
+}))
+"
+)
+
 WORKFLOW_ID=$(curl -s -X POST "$BASE/workflows/from-template/side_hustle_pipeline" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"initial_context\":{\"focus\":\"$FOCUS\",\"budget\":\"$BUDGET\",\"skills\":\"$SKILLS\",\"constraints\":\"$CONSTRAINTS\"}}" \
+  -d "$REQUEST_BODY" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
 echo "Created workflow: $WORKFLOW_ID"

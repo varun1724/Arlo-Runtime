@@ -7,22 +7,56 @@ DOMAIN="${1:-AI-powered developer tools}"
 FOCUS="${2:-code review, testing automation}"
 CONSTRAINTS="${3:-solo developer, limited budget}"
 
+# Round 6: deep research mode opt-in. Set ARLO_DEEP_MODE=1 to enable
+# broader research (15-20 opportunities, longer step timeouts, more
+# contrarian sourcing depth, 7 final rankings instead of 5).
+# Recommended ON for Claude Max users where token cost is effectively
+# zero.
+DEEP_MODE_FLAG="false"
+DEEP_MODE_LABEL="off"
+case "${ARLO_DEEP_MODE:-}" in
+  1|true|TRUE|yes|YES|on|ON)
+    DEEP_MODE_FLAG="true"
+    DEEP_MODE_LABEL="ON"
+    ;;
+esac
+
 echo "============================================"
 echo "  Startup Idea Pipeline (Deep Research)"
 echo "============================================"
 echo "  Domain: $DOMAIN"
 echo "  Focus: $FOCUS"
 echo "  Constraints: $CONSTRAINTS"
+echo "  Deep research mode: $DEEP_MODE_LABEL"
 echo ""
 echo "  This pipeline runs 4 research passes before"
 echo "  asking you to pick an idea. Expect 30-60 min."
 echo "============================================"
 echo ""
 
+# Build the JSON body via a python heredoc so the input strings can
+# contain arbitrary punctuation (em dashes, quotes, commas) without
+# breaking the curl call.
+REQUEST_BODY=$(
+  DOMAIN="$DOMAIN" FOCUS="$FOCUS" CONSTRAINTS="$CONSTRAINTS" \
+  DEEP_MODE_FLAG="$DEEP_MODE_FLAG" \
+  python3 -c "
+import json, os
+print(json.dumps({
+    'initial_context': {
+        'domain':       os.environ['DOMAIN'],
+        'focus_areas':  os.environ['FOCUS'],
+        'constraints':  os.environ['CONSTRAINTS'],
+    },
+    'deep_research_mode': os.environ['DEEP_MODE_FLAG'] == 'true',
+}))
+"
+)
+
 WORKFLOW_ID=$(curl -s -X POST "$BASE/workflows/from-template/startup_idea_pipeline" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{\"initial_context\":{\"domain\":\"$DOMAIN\",\"focus_areas\":\"$FOCUS\",\"constraints\":\"$CONSTRAINTS\"}}" \
+  -d "$REQUEST_BODY" \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
 echo "Created workflow: $WORKFLOW_ID"
