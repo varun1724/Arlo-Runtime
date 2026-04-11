@@ -46,6 +46,22 @@ _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
 _LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 
+# Round 6 followup: Claude sometimes wraps INNER JSON values in markdown
+# code fences mid-document, e.g.
+#     "n8n_node_inventory": [
+#         ```json
+#         {"node": ...},
+#         ```
+#     ]
+# This is a hallucination — the outer document is already JSON, no fence
+# is needed. But the parser dies with "Expecting value" at the fence line.
+# This regex matches the opening ``` (with optional language tag) and the
+# closing ``` and lets _strip() remove them when they appear OUTSIDE
+# string literals. Real string values containing the literal substring
+# "```python" (e.g. a description discussing markdown) are preserved
+# because _strip walks string ranges and skips them.
+_INLINE_FENCE_RE = re.compile(r"```(?:[a-zA-Z]+)?[ \t]*\n?")
+
 
 def _build_parse_error_window(text: str, pos: int, radius: int = 120) -> str:
     """Round 6 followup: build a human-readable diagnostic showing what
@@ -182,6 +198,33 @@ def _sanitize_json_payload(payload: str) -> str:
                 string_start = i
 
     payload = _strip(_TRAILING_COMMA_RE, r"\1", payload)
+
+    # Round 6 followup: strip stray markdown code fences that Claude
+    # sometimes inserts mid-document around inner JSON values. The
+    # _strip helper skips matches inside string literals, so a real
+    # description that contains "```python" stays intact. Recompute
+    # string ranges first since the trailing-comma pass may have
+    # shifted character positions.
+    string_ranges = []
+    in_string = False
+    escape = False
+    string_start = 0
+    for i, ch in enumerate(payload):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            if in_string:
+                string_ranges.append((string_start, i + 1))
+                in_string = False
+            else:
+                in_string = True
+                string_start = i
+    payload = _strip(_INLINE_FENCE_RE, "", payload)
+
     return payload
 
 

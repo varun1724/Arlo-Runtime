@@ -760,7 +760,11 @@ SIDE_HUSTLE_PIPELINE = {
                 "synthesis_and_ranking will apply weighting later).\n\n"
                 "6. verdict: 2-3 sentence honest assessment. If a score anchor note forces a "
                 "change to any dimension, mention why.\n\n"
-                "OUTPUT: Respond with ONLY valid JSON:\n"
+                "OUTPUT: Respond with ONLY valid JSON. Do NOT wrap inner "
+                "arrays or objects in ```json code fences — the outer "
+                "document is already JSON, fences inside it are a parse "
+                "error. If you want to format the response, use a single "
+                "fence around the WHOLE document, never around inner values.\n"
                 '{{\n'
                 '  "evaluations": [\n'
                 '    {{\n'
