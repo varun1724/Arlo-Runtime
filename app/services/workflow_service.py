@@ -22,6 +22,15 @@ from app.services.job_service import create_job
 logger = logging.getLogger("arlo.workflow")
 
 
+# Round 3 (side hustle): the approval-gate fallback in ``approve_step``
+# walks this tuple when deciding which ``selected_*`` context key(s)
+# to populate from rank-1. ``selected_idea`` is the startup pipeline's
+# convention; ``selected_hustle`` is the side hustle + freelance
+# scanner convention. Adding a new approval-gated pipeline with its
+# own key? Append it here.
+_APPROVAL_FALLBACK_KEYS: tuple[str, ...] = ("selected_idea", "selected_hustle")
+
+
 async def create_workflow(
     session: AsyncSession, request: CreateWorkflowRequest
 ) -> WorkflowRow:
@@ -333,42 +342,49 @@ async def approve_step(
         # Create the job and resume
         current_step = step_defs[current_index]
 
-        # Defensive fallback: if any downstream step needs `selected_idea`
-        # (via context_inputs) but the caller didn't provide one in
+        # Defensive fallback: if any downstream step needs a `selected_*`
+        # key (via context_inputs) but the caller didn't provide one in
         # context_overrides, default to the rank-1 entry from the prior
-        # synthesis. This keeps direct API callers (and old scripts)
-        # working without forcing them to pick.
+        # synthesis. Round 3: pipeline-aware across `selected_idea`
+        # (startup) and `selected_hustle` (side hustle + freelance
+        # scanner). A workflow that somehow needs both gets both.
+        # This keeps direct API callers and legacy scripts working
+        # without forcing them to pick.
         #
         # Note: we walk *forward* from the current step. The current step
         # is the approval gate itself (a placeholder with no context_inputs),
         # so checking only the current step misses the point — the consumer
         # is the step that comes AFTER the approval.
-        if "selected_idea" not in context:
-            needs_selected_idea = any(
-                step.context_inputs is not None
-                and "selected_idea" in step.context_inputs
-                for step in step_defs[current_index:]
-            )
-            if needs_selected_idea:
-                try:
-                    synthesis_raw = context.get("synthesis")
-                    synthesis_dict = (
-                        json.loads(synthesis_raw)
-                        if isinstance(synthesis_raw, str)
-                        else synthesis_raw
+        needed_keys: set[str] = set()
+        for downstream in step_defs[current_index:]:
+            if downstream.context_inputs is None:
+                continue
+            for key in _APPROVAL_FALLBACK_KEYS:
+                if key in downstream.context_inputs and key not in context:
+                    needed_keys.add(key)
+
+        if needed_keys:
+            try:
+                synthesis_raw = context.get("synthesis")
+                synthesis_dict = (
+                    json.loads(synthesis_raw)
+                    if isinstance(synthesis_raw, str)
+                    else synthesis_raw
+                )
+                rankings = (synthesis_dict or {}).get("final_rankings") or []
+                if rankings:
+                    rank_one = rankings[0]
+                    for key in needed_keys:
+                        context[key] = rank_one
+                    logger.info(
+                        "Workflow %s: no %s provided, defaulting to rank-1",
+                        workflow_id, sorted(needed_keys),
                     )
-                    rankings = (synthesis_dict or {}).get("final_rankings") or []
-                    if rankings:
-                        context["selected_idea"] = rankings[0]
-                        logger.info(
-                            "Workflow %s: no selected_idea provided, defaulting to rank-1",
-                            workflow_id,
-                        )
-                except (json.JSONDecodeError, TypeError, KeyError):
-                    logger.warning(
-                        "Workflow %s: could not extract default selected_idea from synthesis",
-                        workflow_id,
-                    )
+            except (json.JSONDecodeError, TypeError, KeyError):
+                logger.warning(
+                    "Workflow %s: could not extract default %s from synthesis",
+                    workflow_id, sorted(needed_keys),
+                )
         await session.execute(
             update(WorkflowRow)
             .where(WorkflowRow.id == workflow_id)

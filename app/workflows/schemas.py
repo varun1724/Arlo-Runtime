@@ -299,6 +299,327 @@ class SynthesisResult(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Side hustle pipeline schemas (Round 2)
+# ─────────────────────────────────────────────────────────────────────
+#
+# Schemas mirror the JSON contracts in the 4 research prompts defined
+# in SIDE_HUSTLE_PIPELINE in app/workflows/templates.py. Every model
+# uses ConfigDict(extra="allow") so prompt-level field additions don't
+# break in-flight workflows; critical lists use min_length to catch
+# silent empty-array failures.
+#
+# Names are prefixed with ``SideHustle`` to avoid collisions with the
+# startup pipeline schemas, which reuse some bare names like Scores,
+# FailedPredecessor, and EvidenceStrength.
+
+
+# Reusing the TimingSignalType literal from the startup pipeline
+# (same 6 categories). If the two pipelines ever need to diverge, this
+# can be split into its own literal.
+
+
+SideHustleSourceType = Literal[
+    "stripe_screenshot",
+    "indie_hackers_mrr",
+    "reddit_with_proof",
+    "youtube_dashboard",
+    "other",
+]
+
+
+AutomationRealnessCheck = Literal[
+    "fully_automated",
+    "mostly_automated_monitoring",
+    "manual_with_assist",
+    "fake_automation",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Step 0 side hustle: research_side_hustles → SideHustleResearchResult
+# ─────────────────────────────────────────────────────────────────────
+
+
+class SideHustleIncomeEvidence(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    source_url: str = Field(min_length=5)
+    source_type: SideHustleSourceType
+    claimed_income: str = Field(min_length=3)
+
+
+class SideHustleOpportunity(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    # max_length=200 is a loose cap to catch absurdly long "names" that
+    # would indicate Claude confused the name field with a description.
+    # Tight enough to reject garbage, loose enough to not trip the
+    # prompt-schema alignment test's placeholder string.
+    name: str = Field(min_length=2, max_length=200)
+    description: str = Field(min_length=20)
+    automation_approach: str = Field(min_length=15)
+    timing_signal_type: TimingSignalType
+    timing_signal: str = Field(min_length=10)
+    income_evidence: SideHustleIncomeEvidence
+    income_range: str = Field(min_length=3)
+    tools_needed: list[str] = Field(min_length=1)
+    non_obviousness_check: Literal["yes", "no"]
+    # Prompt says only required when non_obviousness_check == "yes";
+    # schema can't express that cleanly without a validator so we accept
+    # either. Tests verify the field exists when required.
+    non_obviousness_justification: str | None = None
+    automation_realness_check: AutomationRealnessCheck
+
+
+class SideHustleResearchResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    # Round 1 prompt asks for 10-12 opportunities. min_length=8 leaves
+    # slack for Claude rounding down while still catching a silent
+    # empty-array failure. Can be tuned down to 5 in a hotfix if
+    # production runs show 8 is too strict.
+    opportunities: list[SideHustleOpportunity] = Field(min_length=8)
+    sources_consulted: list[str] = Field(min_length=3)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Step 1 side hustle: evaluate_feasibility → SideHustleFeasibilityResult
+# ─────────────────────────────────────────────────────────────────────
+
+
+N8nNodeAvailability = Literal[
+    "built_in",
+    "first_party",
+    "community_package",
+    "custom_code",
+]
+
+
+LegalComplianceCategory = Literal[
+    "PLATFORM_TOS",
+    "CFAA",
+    "FTC_AFFILIATE",
+    "CAN_SPAM",
+    "GDPR",
+    "STATE_BUSINESS_LICENSE",
+    "TAX_THRESHOLD",
+]
+
+
+class SideHustleScores(BaseModel):
+    """Six feasibility dimensions from the Round 1 score-anchor prompt.
+
+    Each score is an integer 1-10. The anchors in the prompt define
+    what each value means; the synthesis step later applies weights.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    revenue_potential: int = Field(ge=1, le=10)
+    n8n_specific_feasibility: int = Field(ge=1, le=10)
+    time_to_first_dollar: int = Field(ge=1, le=10)
+    maintenance_effort: int = Field(ge=1, le=10)
+    legal_safety: int = Field(ge=1, le=10)
+    scalability: int = Field(ge=1, le=10)
+
+
+class N8nNodeInventoryEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    node: str = Field(min_length=3)
+    availability: N8nNodeAvailability
+    notes: str | None = None
+
+
+class SideHustleLegalRisk(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    category: str = Field(min_length=3)
+    regulator_or_platform: str = Field(min_length=2)
+    recent_enforcement: str = Field(min_length=10)
+    source: str = Field(min_length=5)
+
+
+class SideHustleLegalChecklist(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    compliance_categories: list[LegalComplianceCategory] = Field(default_factory=list)
+    specific_risks: list[SideHustleLegalRisk] = Field(default_factory=list)
+
+
+class SideHustleEvaluation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    name: str = Field(min_length=2)
+    scores: SideHustleScores
+    total_score: int = Field(ge=6, le=60)
+    n8n_node_inventory: list[N8nNodeInventoryEntry] = Field(min_length=1)
+    legal_checklist: SideHustleLegalChecklist
+    monthly_costs: str = Field(min_length=3)
+    automation_bottleneck: str = Field(min_length=10)
+    verdict: str = Field(min_length=15)
+
+
+class SideHustleFeasibilityResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    # Research produces 10-12 opportunities with min_length=8, but some
+    # may be dropped in feasibility (e.g. automation_realness_check was
+    # fake_automation but snuck through). Set min_length=5 so the
+    # contrarian step has enough to work with.
+    evaluations: list[SideHustleEvaluation] = Field(min_length=5)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Step 2 side hustle: contrarian_analysis → SideHustleContrarianResult
+# ─────────────────────────────────────────────────────────────────────
+
+
+SaturationLevel = Literal["low", "medium", "high"]
+
+
+class SideHustleFailedPredecessor(BaseModel):
+    """Named predecessor who tried this hustle and failed.
+
+    Round 1 prompt requires name + year + reason + source URL; all are
+    mandatory here. Vague claims like "many people failed" don't satisfy
+    this schema.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str = Field(min_length=2)
+    year: str = Field(min_length=4)
+    reason: str = Field(min_length=10)
+    source: str = Field(min_length=5)
+
+
+class PlatformCrackdown(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    platform: str = Field(min_length=2)
+    action: str = Field(min_length=5)
+    when: str = Field(min_length=4)
+    source: str = Field(min_length=5)
+
+
+class Saturation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    search_summary: str = Field(min_length=15)
+    saturation_level: SaturationLevel
+
+
+class IncomeReality(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    primary_source_links: list[str] = Field(default_factory=list)
+    typical_reported_income: str = Field(min_length=3)
+    evidence_strength: EvidenceStrength
+
+
+class FailureStory(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    quit_reason: str = Field(min_length=10)
+    source: str = Field(min_length=5)
+
+
+class SideHustleContrarianAnalysis(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    name: str = Field(min_length=2)
+    failed_predecessors: list[SideHustleFailedPredecessor] = Field(default_factory=list)
+    platform_dependency: str = Field(min_length=2)
+    platform_crackdown_evidence: list[PlatformCrackdown] = Field(default_factory=list)
+    saturation: Saturation
+    income_reality: IncomeReality
+    failure_stories: list[FailureStory] = Field(default_factory=list)
+    kill_scenario: str = Field(min_length=15)
+    kill_probability: KillProbability
+    verdict: Verdict
+    verdict_reasoning: str = Field(min_length=30)
+
+
+class SideHustleContrarianResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    # Same rationale as feasibility — need enough survivors for
+    # synthesis to make a meaningful ranking.
+    analyses: list[SideHustleContrarianAnalysis] = Field(min_length=5)
+    summary: str = Field(min_length=30)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Step 3 side hustle: synthesis_and_ranking → SideHustleSynthesisResult
+# ─────────────────────────────────────────────────────────────────────
+
+
+SideHustleContrarianVerdict = Literal["survives", "weakened"]
+
+
+class NodeGraphEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    node: str = Field(min_length=3)
+    role: str = Field(min_length=3)
+
+
+class SideHustleWorkflowSpec(BaseModel):
+    """All 8 required fields from the Round 1 synthesis prompt.
+
+    Round 4 made the build step mandate a Webhook trigger (not
+    Schedule/Manual) because the test_run step triggers via webhook.
+    The spec here enforces the same by requiring trigger_node to be
+    a free-text field that the build prompt cross-checks.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    trigger_node: str = Field(min_length=10)
+    node_graph: list[NodeGraphEntry] = Field(min_length=2)
+    external_credentials: list[str] = Field(default_factory=list)
+    expected_runtime: str = Field(min_length=3)
+    frequency: str = Field(min_length=5)
+    # Round 1 prompt says "exactly 3 features" for out_of_scope.
+    # Enforce that strictly here. If Claude chronically violates,
+    # relax to min_length=2, max_length=5 in a hotfix.
+    out_of_scope: list[str] = Field(min_length=3, max_length=3)
+    success_metric: str = Field(min_length=15)
+    risky_assumption: str = Field(min_length=15)
+
+
+class SideHustleRanking(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    rank: int = Field(ge=1)
+    name: str = Field(min_length=2)
+    one_liner: str = Field(min_length=10)
+    monthly_income_estimate: str = Field(min_length=3)
+    monthly_costs: str = Field(min_length=3)
+    contrarian_verdict: SideHustleContrarianVerdict
+    # Raw weighted sum before contrarian adjustment. Max possible per
+    # the Round 1 formula is 65 (all 10s), realistic range ~20-55.
+    raw_score: float = Field(ge=6.0, le=65.0)
+    # Adjusted total after contrarian weighting (×0.8 for 'weakened').
+    # Min 4.8 = all-ones * 0.8; max 65.0.
+    total_score: float = Field(ge=4.8, le=65.0)
+    head_to_head: str = Field(min_length=15)
+    surviving_risks: list[str] = Field(default_factory=list)
+    n8n_workflow_spec: SideHustleWorkflowSpec
+
+
+class SideHustleSynthesisResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    # Round 1 prompt says top 5 (or fewer if fewer survived). min 2
+    # catches the "everything got killed" case; max 7 catches the
+    # "Claude ignored the instruction and produced 20" case.
+    final_rankings: list[SideHustleRanking] = Field(min_length=2, max_length=7)
+    executive_summary: str = Field(min_length=100)
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Registry — looked up by name from StepDefinition.output_schema
 # ─────────────────────────────────────────────────────────────────────
 
@@ -307,6 +628,11 @@ STEP_OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "startup_deep_dive_v1": DeepDiveResult,
     "startup_contrarian_v1": ContrarianResult,
     "startup_synthesis_v1": SynthesisResult,
+    # Round 2 side hustle additions
+    "side_hustle_research_v1": SideHustleResearchResult,
+    "side_hustle_feasibility_v1": SideHustleFeasibilityResult,
+    "side_hustle_contrarian_v1": SideHustleContrarianResult,
+    "side_hustle_synthesis_v1": SideHustleSynthesisResult,
 }
 
 

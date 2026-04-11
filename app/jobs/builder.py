@@ -21,6 +21,7 @@ from app.services.claude_runner import (
     run_claude,
 )
 from app.services.job_service import finalize_job, update_job_progress
+from app.tools.n8n import N8nClient, N8nWorkflowValidationError
 from app.workspace.manager import create_job_workspace, scan_workspace_artifacts
 
 logger = logging.getLogger("arlo.jobs.builder")
@@ -49,7 +50,10 @@ async def execute_builder_job(session: AsyncSession, job: JobRow) -> None:
 
         # Resolve per-step timeout override (Round 3): mirror the research.py
         # plumbing so build_mvp's timeout_override actually takes effect.
+        # Round 4: also captures the step definition for later use by the
+        # required_artifacts enforcement path.
         timeout_override: int | None = None
+        step: StepDefinition | None = None
         if job.workflow_id is not None:
             step = await _load_step_definition(session, job)
             if step is not None and step.timeout_override is not None:
@@ -131,12 +135,47 @@ async def execute_builder_job(session: AsyncSession, job: JobRow) -> None:
         # If any are missing, raise ClaudeRunError so the workflow's auto-retry
         # logic gets a chance to recover. This catches the Round 1 silent loss
         # of BUILD_DECISIONS.md.
-        missing = _check_required_artifacts(workspace_path)
+        #
+        # Round 4 (side hustle): per-step required_artifacts override the
+        # global default. The side hustle build_n8n_workflow step sets its
+        # own list to require workflow.json and test_payload.json on top
+        # of the common README/BUILD_DECISIONS pair. Falls back to the
+        # module-level default when the step doesn't specify one.
+        required: tuple[str, ...] = REQUIRED_BUILDER_ARTIFACTS
+        if step is not None and step.required_artifacts:
+            required = tuple(step.required_artifacts)
+        missing = _check_required_artifacts(workspace_path, required=required)
         if missing:
             raise ClaudeRunError(
                 f"Builder did not produce required artifacts: {', '.join(missing)}. "
-                f"Every build must include: {', '.join(REQUIRED_BUILDER_ARTIFACTS)}."
+                f"Every build must include: {', '.join(required)}."
             )
+
+        # Round 3 (side hustle): structural validation of workflow.json.
+        # The required_artifacts check above proved the file EXISTS; this
+        # block proves it's a VALID n8n workflow. Gated on workflow.json
+        # being in the step's required_artifacts list so it only fires
+        # for n8n-targeting builds (not the startup MVP builder). If
+        # invalid, raise ClaudeRunError to trigger the auto-retry path —
+        # Claude gets another attempt with the specific field-path error
+        # in its prompt so it can fix the structure.
+        if "workflow.json" in required:
+            wf_path = Path(workspace_path) / "workflow.json"
+            try:
+                workflow_json = json.loads(wf_path.read_text())
+            except (json.JSONDecodeError, OSError) as e:
+                raise ClaudeRunError(
+                    f"Builder wrote workflow.json but it is not valid JSON: {e}"
+                ) from e
+            try:
+                N8nClient.validate_workflow_json(workflow_json)
+            except N8nWorkflowValidationError as e:
+                raise ClaudeRunError(
+                    f"Builder wrote workflow.json but it failed "
+                    f"structural validation: {e}. The workflow would "
+                    f"be rejected by n8n's create endpoint. Fix the "
+                    f"structure and retry."
+                ) from e
 
         # Step 5: Parse manifest file, fall back to CLI output, then filesystem scan
         builder_result = _extract_builder_result(workspace_path, result, fs_artifacts)
@@ -280,16 +319,24 @@ def _build_preview(result: BuilderResult) -> str:
     return "\n".join(lines)
 
 
-def _check_required_artifacts(workspace_path: str) -> list[str]:
+def _check_required_artifacts(
+    workspace_path: str,
+    required: tuple[str, ...] = REQUIRED_BUILDER_ARTIFACTS,
+) -> list[str]:
     """Return the list of required artifact filenames missing from the workspace.
 
     Uses direct path checks rather than ``scan_workspace_artifacts`` because
     the scanner intentionally skips dotfiles and we want to keep room for
     future required artifacts that may be hidden (e.g. ``.env.example``).
+
+    Round 4: ``required`` is now parameterized so each pipeline's build
+    step can specify its own enforcement list via
+    ``StepDefinition.required_artifacts``. Defaults to the original
+    ``REQUIRED_BUILDER_ARTIFACTS`` tuple for backward compatibility.
     """
     workspace = Path(workspace_path)
     missing: list[str] = []
-    for filename in REQUIRED_BUILDER_ARTIFACTS:
+    for filename in required:
         if not (workspace / filename).is_file():
             missing.append(filename)
     return missing

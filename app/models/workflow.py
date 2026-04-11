@@ -82,6 +82,20 @@ class StepDefinition(BaseModel):
     Defaults to None — when None, the existing unconditional loop behavior
     is preserved for backward compatibility (e.g. strategy_evolution).
     """
+    required_artifacts: list[str] | None = None
+    """Round 4 (side hustle): per-step list of filenames the builder must
+    produce in its workspace. If any are missing, ``execute_builder_job``
+    raises ``ClaudeRunError``, which feeds the existing ``max_retries``
+    auto-retry path.
+
+    When None (default), the builder falls back to the module-level
+    ``REQUIRED_BUILDER_ARTIFACTS`` tuple (``README.md``, ``BUILD_DECISIONS.md``)
+    which was originally set for the startup pipeline. This lets each
+    pipeline define its own enforcement list without changing the builder's
+    fallback behavior — e.g. the side hustle ``build_n8n_workflow`` step
+    requires ``workflow.json`` and ``test_payload.json`` on top of the
+    common README/BUILD_DECISIONS pair.
+    """
 
 
 # --- Request models ---

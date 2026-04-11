@@ -66,10 +66,27 @@ else:
     echo "============================================"
     echo ""
 
+    # Round 3: polished approval display mirroring the startup script.
+    # Shows cost-so-far + executive summary + per-ranking detail with
+    # the n8n_workflow_spec fields so the user can make an informed
+    # pick without having to read the raw synthesis JSON.
     echo "$RESPONSE" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 ctx = d.get('context', {})
+
+# Round 3: show cost so far before the user picks
+cost = d.get('total_estimated_cost_usd')
+tin = d.get('total_tokens_input')
+tout = d.get('total_tokens_output')
+if cost is not None or tin is not None:
+    print('--- Research Cost So Far ---')
+    if cost is not None:
+        print(f'Estimated USD: \${cost:.4f}')
+    if tin is not None and tout is not None:
+        print(f'Tokens: {tin:,} in / {tout:,} out')
+    print()
+
 synth_raw = ctx.get('synthesis', '{}')
 try:
     synth = json.loads(synth_raw) if isinstance(synth_raw, str) else synth_raw
@@ -77,12 +94,15 @@ except: synth = {}
 
 summary = synth.get('executive_summary', '')
 if summary:
-    print('--- Summary ---')
+    print('--- Executive Summary ---')
     print(summary[:1000])
     print()
 
 rankings = synth.get('final_rankings', [])
-if rankings:
+if not rankings:
+    print('No ranked hustles found.')
+    print('0')
+else:
     print('--- Ranked Side Hustles ---')
     print()
     for r in rankings:
@@ -92,21 +112,38 @@ if rankings:
         income = r.get('monthly_income_estimate', '?')
         costs = r.get('monthly_costs', '?')
         total = r.get('total_score', 0)
+        verdict = r.get('contrarian_verdict', '?')
         risks = r.get('surviving_risks', [])
         spec = r.get('n8n_workflow_spec', {})
+
         print(f'  [{rank}] {name}')
         print(f'      {liner}')
-        print(f'      Income: {income}  |  Costs: {costs}  |  Score: {total}')
+        print(f'      Income: {income}  |  Costs: {costs}')
+        print(f'      Score: {total}  |  Contrarian: {verdict}')
         if spec:
-            print(f'      Trigger: {spec.get(\"trigger\", \"?\")}')
-            print(f'      Frequency: {spec.get(\"frequency\", \"?\")}')
+            trigger = spec.get('trigger_node', spec.get('trigger', '?'))
+            freq = spec.get('frequency', '?')
+            runtime = spec.get('expected_runtime', '?')
+            creds = spec.get('external_credentials', [])
+            out_of_scope = spec.get('out_of_scope', [])
+            success_metric = spec.get('success_metric', '')
+            risky_assumption = spec.get('risky_assumption', '')
+            print(f'      Trigger: {trigger}')
+            print(f'      Frequency: {freq}  |  Runtime: {runtime}')
+            if creds:
+                print(f'      Credentials needed: {len(creds)} '
+                      f'({\", \".join(creds[:3])})')
+            if success_metric:
+                print(f'      Success metric: {success_metric[:120]}')
+            if risky_assumption:
+                print(f'      Risky assumption: {risky_assumption[:120]}')
+            if out_of_scope:
+                print(f'      Out of scope: {\", \".join(out_of_scope[:3])}')
         if risks:
-            print(f'      Risks: {\", \".join(risks[:2])}')
+            print(f'      Surviving risks: {\", \".join(risks[:3])}')
         print()
-    print(len(rankings))
-else:
-    print('No ranked hustles found.')
-    print('0')
+
+    print(f'{len(rankings)}')
 " 2>&1 > /tmp/arlo_hustle.txt
 
     COUNT=$(tail -1 /tmp/arlo_hustle.txt)
@@ -134,12 +171,51 @@ else:
           -d '{"approved": false}' > /dev/null
         echo "Skipped."
       else
-        curl -s -X POST "$BASE/workflows/$WORKFLOW_ID/approve" \
-          -H "Authorization: Bearer $TOKEN" \
-          -H "Content-Type: application/json" \
-          -d '{"approved": true}' > /dev/null
-        echo "Approved! Building n8n workflow..."
-        echo ""
+        # Round 3: build a context_overrides payload with the chosen
+        # ranking under the `selected_hustle` key so the build step's
+        # prompt renders correctly. Without this, approve_step's
+        # fallback would kick in and default to rank-1, which is
+        # wrong when the user picked something else. Matches the
+        # startup pipeline's OVERRIDE_PAYLOAD pattern.
+        OVERRIDE_PAYLOAD=$(echo "$RESPONSE" | CHOICE="$CHOICE" python3 -c "
+import sys, json, os
+choice = int(os.environ['CHOICE'])
+d = json.load(sys.stdin)
+ctx = d.get('context', {})
+synth_raw = ctx.get('synthesis', '{}')
+try:
+    synth = json.loads(synth_raw) if isinstance(synth_raw, str) else synth_raw
+except Exception:
+    synth = {}
+rankings = synth.get('final_rankings', [])
+if not rankings or choice < 1 or choice > len(rankings):
+    print('INVALID', file=sys.stderr)
+    sys.exit(2)
+# Match by 'rank' field first, fall back to positional index
+selected = None
+for r in rankings:
+    if r.get('rank') == choice:
+        selected = r
+        break
+if selected is None:
+    selected = rankings[choice - 1]
+print(json.dumps({'approved': True, 'context_overrides': {'selected_hustle': selected}}))
+")
+
+        if [ -z "$OVERRIDE_PAYLOAD" ]; then
+          echo "Invalid choice; skipping."
+          curl -s -X POST "$BASE/workflows/$WORKFLOW_ID/approve" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"approved": false}' > /dev/null
+        else
+          curl -s -X POST "$BASE/workflows/$WORKFLOW_ID/approve" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$OVERRIDE_PAYLOAD" > /dev/null
+          echo "Approved! Building n8n workflow..."
+          echo ""
+        fi
       fi
     fi
     rm -f /tmp/arlo_hustle.txt

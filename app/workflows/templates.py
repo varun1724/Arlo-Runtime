@@ -550,46 +550,110 @@ SIDE_HUSTLE_PIPELINE = {
             "name": "research_side_hustles",
             "job_type": "research",
             "prompt_template": (
-                "You are a side hustle automation researcher. Research computer-based side hustles "
-                "that can be largely or fully automated using workflow automation tools like n8n.\n\n"
+                "You are a side hustle automation researcher hunting for NON-OBVIOUS "
+                "opportunities that can be largely or fully automated with n8n. Your "
+                "goal is to surface ideas that 90% of researchers would miss.\n\n"
                 "Focus: {focus}\n"
                 "Budget: {budget}\n"
                 "Skills: {skills}\n"
                 "Constraints: {constraints}\n\n"
                 "INSTRUCTIONS:\n"
-                "1. Use web search to find real, proven side hustles that people are actually doing.\n"
-                "2. Focus specifically on hustles that can be AUTOMATED with:\n"
-                "   - n8n workflow automation (HTTP requests, scheduling, data transformation)\n"
-                "   - Web scraping and data aggregation\n"
-                "   - API integrations (social media, email, marketplaces)\n"
-                "   - Content curation and republishing\n"
-                "   - Lead generation and outreach\n"
-                "   - Price monitoring and arbitrage\n"
-                "   - Affiliate marketing automation\n\n"
-                "3. For each opportunity, find REAL examples:\n"
-                "   - People on Reddit/Twitter/YouTube showing income from this\n"
-                "   - Tools and services they use\n"
-                "   - Realistic monthly income ranges\n"
-                "   - How much is automated vs manual\n\n"
-                "4. Identify 10-12 distinct opportunities.\n\n"
+                "1. Use web search across DIVERSE source types. Don't just read "
+                "'passive income' blogs — they're saturated and the good ideas are "
+                "already gone. Search:\n"
+                "   a) Mainstream sources (for sizing only):\n"
+                "      - Grand View Research, IBISWorld, Statista reports on relevant markets\n"
+                "      - Recent crunchbase / product hunt launches in the niche\n"
+                "   b) CONTRARIAN sources (for non-obvious opportunities):\n"
+                "      - Reddit niche subreddits where people post revenue screenshots "
+                "(r/juststart, r/SideProject, r/SaaS, r/entrepreneur, domain-specific subs)\n"
+                "      - IndieHackers.com public revenue pages (sort by verified MRR)\n"
+                "      - Twitter 'build in public' threads with actual Stripe/payment screenshots\n"
+                "      - YouTube Shorts titled 'how I make $X/month automated' (bias toward channels "
+                "with under 10K subs — those are closer to ground truth)\n"
+                "      - GitHub trending repos in automation/scraping/integration space\n"
+                "      - Hacker News 'Ask HN' and 'Show HN' threads about automated revenue\n"
+                "      - Job postings asking for 'n8n automation consultant' — reveals what "
+                "businesses are willing to pay to automate\n\n"
+                "2. Identify 10-12 distinct opportunities. Bias toward non-obvious. For "
+                "each, explicitly tag the TIMING SIGNAL TYPE — choose ONE of these 6 "
+                "categories (mirrors the startup pipeline taxonomy):\n"
+                "   - REGULATORY_SHIFT: new law/rule creates a forced workflow need\n"
+                "   - TECHNOLOGY_UNLOCK: a capability (new API, cheaper GPU, LLM) that wasn't "
+                "possible 24 months ago\n"
+                "   - BEHAVIORAL_CHANGE: user habits shifted (creator economy, remote work, "
+                "newsletter adoption)\n"
+                "   - COST_COLLAPSE: something previously expensive became cheap "
+                "(LLM inference, cloud hosting, API access)\n"
+                "   - DISTRIBUTION_UNLOCK: new channel reaching customers cheaply "
+                "(TikTok Shop, Substack, WhatsApp Business API)\n"
+                "   - INCUMBENT_FAILURE: a big player got worse, abandoned a segment, "
+                "raised prices, or got sued\n"
+                "   If you can't tag a clear timing signal, the opportunity is probably "
+                "stale — drop it.\n\n"
+                "3. For each opportunity, provide:\n"
+                "   - name: 2-5 word label\n"
+                "   - description: 2-3 sentences on what the hustle is and how it works "
+                "end-to-end\n"
+                "   - automation_approach: specifically how n8n would automate this. "
+                "Name real n8n node types if possible (HTTP Request, Webhook, Schedule "
+                "Trigger, IF, Code, Set).\n"
+                "   - timing_signal_type: one of the 6 categories above\n"
+                "   - timing_signal: the specific evidence (article, regulation, launch)\n"
+                "   - income_evidence: at least ONE cited revenue claim with URL. Must be "
+                "a verifiable source: a Stripe screenshot, IndieHackers MRR page, Reddit "
+                "post with proof, or YouTube video with visible payout dashboard. NOT 'people "
+                "say' or 'gurus claim'.\n"
+                "   - income_range: realistic monthly income as a range (e.g. '$200-800')\n"
+                "   - tools_needed: APIs, services, accounts required (be specific: "
+                "'OpenAI API key', 'Twitter developer account', 'Stripe Connect', etc.)\n"
+                "   - non_obviousness_check: would 90% of 'passive income' bloggers list "
+                "this? (yes|no)\n"
+                "   - non_obviousness_justification: only required if non_obviousness_check "
+                "is 'yes' — explain why it's still worth listing OR it should be replaced "
+                "with something fresher.\n"
+                "   - automation_realness_check: many side hustle gurus call things "
+                "'automated' when every transaction still needs a human. Is this actually "
+                "automatable, or does it secretly require manual judgment per item?\n"
+                "     - Valid values: 'fully_automated' | 'mostly_automated_monitoring' | "
+                "'manual_with_assist' | 'fake_automation'\n"
+                "     - 'fake_automation' opportunities should be dropped — they're not what "
+                "we're looking for.\n\n"
+                "QUALITY STANDARDS:\n"
+                "- Every income claim must cite a URL. No 'some users report' or 'experts say'.\n"
+                "- Every opportunity must reference at least one real tool or platform by name.\n"
+                "- At least 5 of the 10-12 opportunities must be NON-OBVIOUS "
+                "(non_obviousness_check = 'no').\n"
+                "- Do NOT include opportunities with automation_realness_check = 'fake_automation'.\n"
+                "- Use web search for EVERY major claim — do not rely on training data alone.\n\n"
                 "OUTPUT: Respond with ONLY valid JSON:\n"
                 '{{\n'
                 '  "opportunities": [\n'
                 '    {{\n'
                 '      "name": "string",\n'
-                '      "description": "string — what the side hustle is and how it works",\n'
+                '      "description": "string",\n'
                 '      "automation_approach": "string — specifically how n8n would automate this",\n'
-                '      "income_range": "string — realistic monthly income (e.g., $200-800/month)",\n'
-                '      "real_examples": ["string — specific Reddit posts, YouTube videos, tweets showing this works"],\n'
-                '      "tools_needed": ["string — APIs, services, accounts required"],\n'
-                '      "automation_percentage": "string — what % can be automated (e.g., 80% automated, 20% manual review)"\n'
+                '      "timing_signal_type": "REGULATORY_SHIFT|TECHNOLOGY_UNLOCK|BEHAVIORAL_CHANGE|COST_COLLAPSE|DISTRIBUTION_UNLOCK|INCUMBENT_FAILURE",\n'
+                '      "timing_signal": "string — specific evidence with source",\n'
+                '      "income_evidence": {{\n'
+                '        "source_url": "string — URL to a verifiable revenue claim",\n'
+                '        "source_type": "stripe_screenshot|indie_hackers_mrr|reddit_with_proof|youtube_dashboard|other",\n'
+                '        "claimed_income": "string — e.g. $1,200/month net"\n'
+                '      }},\n'
+                '      "income_range": "string",\n'
+                '      "tools_needed": ["string"],\n'
+                '      "non_obviousness_check": "yes|no",\n'
+                '      "non_obviousness_justification": "string — only required if check is yes",\n'
+                '      "automation_realness_check": "fully_automated|mostly_automated_monitoring|manual_with_assist|fake_automation"\n'
                 '    }}\n'
                 '  ],\n'
-                '  "sources_consulted": ["string — where you searched"]\n'
+                '  "sources_consulted": ["string — name/URL of report, forum, channel, repo searched"]\n'
                 '}}'
             ),
             "output_key": "side_hustle_research",
             "timeout_override": 1800,
+            "max_retries": 2,
+            "output_schema": "side_hustle_research_v1",
         },
         # ──────────────────────────────────────────────────
         # Step 1: Evaluate feasibility
@@ -598,19 +662,78 @@ SIDE_HUSTLE_PIPELINE = {
             "name": "evaluate_feasibility",
             "job_type": "research",
             "prompt_template": (
-                "You are evaluating side hustle automation opportunities for feasibility.\n\n"
+                "You are evaluating automated side hustle opportunities. Score each "
+                "one rigorously using the ANCHORS below so scores are comparable "
+                "across runs. Do NOT invent your own scale. Verify every claim with "
+                "web search — the prior step's 'income_evidence' is a starting "
+                "point, not gospel.\n\n"
                 "RESEARCH:\n{side_hustle_research}\n\n"
-                "For each opportunity, use web search to verify claims and score on:\n"
-                "1. revenue_potential (1-10): How realistic is the income range?\n"
-                "2. automation_feasibility (1-10): Can n8n actually handle this? Are the APIs available?\n"
-                "3. time_to_first_dollar (1-10): How quickly can this generate income? (10 = days, 1 = months)\n"
-                "4. maintenance_effort (1-10): How little ongoing work? (10 = fully hands-off)\n"
-                "5. legal_safety (1-10): How safe from TOS violations, legal issues?\n"
-                "6. scalability (1-10): Can income grow without proportional effort?\n\n"
-                "For each, also identify:\n"
-                "- The specific n8n nodes/integrations needed\n"
-                "- Any API costs or subscription fees required\n"
-                "- The critical automation bottleneck (what's hardest to automate)\n\n"
+                "SCORE ANCHORS (integer 1-10 per dimension):\n\n"
+                "revenue_potential — realistic monthly net after costs:\n"
+                "  1  = <$100/mo, or no clear path to paying customers\n"
+                "  5  = $100-500/mo with significant effort\n"
+                "  8  = $1-3K/mo realistic based on comparable operators\n"
+                "  10 = $5K+/mo realistic with multiple comparable operators proven\n\n"
+                "n8n_specific_feasibility — can n8n actually build this?\n"
+                "  1  = needs custom code / infrastructure n8n can't orchestrate\n"
+                "  5  = core workflow works in n8n but hits nodes that don't exist or "
+                "require community packages of unknown quality\n"
+                "  8  = doable with standard n8n nodes (HTTP Request, Schedule, Code, "
+                "IF, Set) plus one or two first-party integrations\n"
+                "  10 = trivially buildable with built-in nodes only; no custom code\n\n"
+                "time_to_first_dollar — how quickly revenue starts:\n"
+                "  1  = 3+ months (requires audience, SEO, or credibility building)\n"
+                "  5  = 3-6 weeks (needs some setup + outreach)\n"
+                "  8  = 1-2 weeks (deploy → first customer soon after)\n"
+                "  10 = days (known paying demand, just need to flip the switch)\n\n"
+                "maintenance_effort — ongoing hands-off-ness:\n"
+                "  1  = daily manual review required per transaction\n"
+                "  5  = weekly check-ins, occasional manual intervention\n"
+                "  8  = mostly hands-off; monthly monitoring\n"
+                "  10 = fully autonomous; only touch it when something breaks\n\n"
+                "legal_safety — risk of TOS/regulatory issues:\n"
+                "  1  = clearly violates a platform TOS, a law, or requires a license "
+                "you don't have\n"
+                "  5  = gray area with enforcement risk (scraping, CAN-SPAM edge cases)\n"
+                "  8  = legal as long as standard best practices are followed\n"
+                "  10 = zero regulatory surface — you're the customer, not the operator "
+                "of regulated activity\n\n"
+                "scalability — can income grow without proportional effort?\n"
+                "  1  = hard cap on income (e.g. 1 human per transaction)\n"
+                "  5  = linear scaling with spend (ads) or effort (outreach)\n"
+                "  8  = sublinear scaling; doubling income requires <2x effort\n"
+                "  10 = genuinely passive scaling (compounding audience, network effects)\n\n"
+                "For EACH opportunity, do the following in addition to scoring:\n\n"
+                "1. n8n_node_inventory: list EVERY n8n node type the workflow will need, "
+                "and for each note whether it's built-in (free), a first-party integration "
+                "(free), a community package (risky — may break on n8n upgrade), or needs "
+                "custom code. This is the single strongest signal of n8n_specific_feasibility.\n\n"
+                "2. legal_checklist: explicitly walk through whichever of these apply. "
+                "For any that DO apply, cite a specific statute/regulator and a specific "
+                "enforcement action in the last 24 months (via web search). If none apply, "
+                "set compliance_categories to [].\n"
+                "   - PLATFORM_TOS: does this rely on scraping/automating a platform whose "
+                "TOS forbids it? Name the platform and the specific TOS section.\n"
+                "   - CFAA: is this scraping public data in a way that the courts still "
+                "treat as 'authorized access'? (post-hiQ v. LinkedIn)\n"
+                "   - FTC_AFFILIATE: if there's affiliate marketing, does it require "
+                "FTC disclosure compliance?\n"
+                "   - CAN_SPAM: if there's email outreach, does it comply with unsubscribe "
+                "and header rules?\n"
+                "   - GDPR: if any data subject is in the EU, does this involve personal data?\n"
+                "   - STATE_BUSINESS_LICENSE: does this require a state-level license to "
+                "sell or operate (e.g. insurance lead gen, financial advice content)?\n"
+                "   - TAX_THRESHOLD: does projected annual income trigger self-employment "
+                "tax or a 1099-K threshold the user must plan for?\n\n"
+                "3. monthly_costs: estimated recurring cost of tools/APIs in USD. Be "
+                "specific (e.g. 'OpenAI API ~$20/mo, n8n self-hosted $0, proxy service $15/mo = $35/mo').\n\n"
+                "4. automation_bottleneck: the ONE step that's hardest to automate. "
+                "If this bottleneck can't be fully automated, it should cap maintenance_effort "
+                "at 7 or below.\n\n"
+                "5. total_score: sum of all six dimensions (unweighted at this step — "
+                "synthesis_and_ranking will apply weighting later).\n\n"
+                "6. verdict: 2-3 sentence honest assessment. If a score anchor note forces a "
+                "change to any dimension, mention why.\n\n"
                 "OUTPUT: Respond with ONLY valid JSON:\n"
                 '{{\n'
                 '  "evaluations": [\n'
@@ -618,17 +741,25 @@ SIDE_HUSTLE_PIPELINE = {
                 '      "name": "string",\n'
                 '      "scores": {{\n'
                 '        "revenue_potential": 8,\n'
-                '        "automation_feasibility": 7,\n'
+                '        "n8n_specific_feasibility": 7,\n'
                 '        "time_to_first_dollar": 9,\n'
                 '        "maintenance_effort": 6,\n'
                 '        "legal_safety": 8,\n'
                 '        "scalability": 7\n'
                 '      }},\n'
                 '      "total_score": 45,\n'
-                '      "n8n_nodes_needed": ["string — specific n8n node types"],\n'
-                '      "monthly_costs": "string — estimated API/service costs",\n'
-                '      "automation_bottleneck": "string — what is hardest to automate",\n'
-                '      "verdict": "string — 2-3 sentence assessment"\n'
+                '      "n8n_node_inventory": [\n'
+                '        {{"node": "n8n-nodes-base.scheduleTrigger", "availability": "built_in", "notes": "string"}}\n'
+                '      ],\n'
+                '      "legal_checklist": {{\n'
+                '        "compliance_categories": ["PLATFORM_TOS|CFAA|FTC_AFFILIATE|CAN_SPAM|GDPR|STATE_BUSINESS_LICENSE|TAX_THRESHOLD"],\n'
+                '        "specific_risks": [\n'
+                '          {{"category": "string", "regulator_or_platform": "string", "recent_enforcement": "string — 24 month lookback", "source": "string — URL"}}\n'
+                '        ]\n'
+                '      }},\n'
+                '      "monthly_costs": "string — itemized",\n'
+                '      "automation_bottleneck": "string",\n'
+                '      "verdict": "string — 2-3 sentences"\n'
                 '    }}\n'
                 '  ]\n'
                 '}}'
@@ -636,6 +767,9 @@ SIDE_HUSTLE_PIPELINE = {
             "output_key": "feasibility",
             "condition": {"field": "side_hustle_research", "operator": "not_empty"},
             "timeout_override": 1800,
+            "max_retries": 2,
+            "output_schema": "side_hustle_feasibility_v1",
+            "context_inputs": ["side_hustle_research"],
         },
         # ──────────────────────────────────────────────────
         # Step 2: Contrarian analysis
@@ -644,40 +778,111 @@ SIDE_HUSTLE_PIPELINE = {
             "name": "contrarian_analysis",
             "job_type": "research",
             "prompt_template": (
-                "You are a skeptic reviewing automated side hustle opportunities. "
-                "Your job is to find reasons each one could fail or get shut down.\n\n"
+                "You are a skeptical VC partner stress-testing automated side hustle "
+                "opportunities. Your job is to find the reasons each one could fail "
+                "or get shut down. Vague risks are useless — every claim needs a "
+                "specific name, date, or URL.\n\n"
                 "FEASIBILITY EVALUATION:\n{feasibility}\n\n"
-                "For EACH opportunity, use web search to investigate:\n\n"
-                "1. PLATFORM RISK: Could the platform change TOS or API access?\n"
-                "   - Search for recent API shutdowns or TOS changes affecting automators\n"
-                "   - Has this platform cracked down on automation before?\n\n"
-                "2. SATURATION: How many people are already doing this?\n"
-                "   - Search Reddit, YouTube for tutorials on this exact hustle\n"
-                "   - If there are 50 YouTube videos teaching it, it's likely saturated\n\n"
-                "3. LEGAL RISK: Could this violate any laws or regulations?\n"
-                "   - CAN-SPAM for email, GDPR for data scraping, FTC for affiliate marketing\n\n"
-                "4. INCOME REALITY CHECK: Search for people reporting ACTUAL income\n"
-                "   - Not what gurus claim, but what regular people report\n"
-                "   - Look for failure stories too\n\n"
-                "5. VERDICT: survives | weakened | killed\n\n"
+                "INSTRUCTIONS:\nFor EACH opportunity, use web search to investigate:\n\n"
+                "1. NAMED FAILED PREDECESSORS: Find SPECIFIC people or businesses that "
+                "tried this exact side hustle and failed.\n"
+                "   - Required fields per predecessor: name (handle/company), year they "
+                "quit or shut down, specific reason (cite a post-mortem URL if you can).\n"
+                "   - Do NOT say 'many people failed' or 'it's crowded' — name them or "
+                "omit the claim.\n"
+                "   - Search: 'reddit [hustle name] failed', 'why I quit [hustle]', "
+                "'[hustle] burnout', indie hackers shutdown stories, failory.com if "
+                "relevant.\n"
+                "   - If you genuinely cannot find any named failures after searching, "
+                "say so explicitly — that itself is meaningful (too new or too niche).\n\n"
+                "2. PLATFORM CRACKDOWN EVIDENCE (required for any opportunity that "
+                "depends on a specific platform — scraping, API use, marketplace selling):\n"
+                "   - Cite at least ONE specific enforcement action in the last 24 months "
+                "against automators in this space. Banned account, API quota cut, TOS update "
+                "that explicitly targets this pattern, or cease-and-desist letter.\n"
+                "   - Include the source URL.\n"
+                "   - If the opportunity doesn't depend on any single platform (e.g. "
+                "self-hosted Discord bot for paying customers), set platform_dependency "
+                "to 'none' and skip.\n\n"
+                "3. SATURATION (required: specific search result count, not adjectives):\n"
+                "   - Run an actual web search like "
+                "'\"[hustle name]\" tutorial 2025' or '[tool] automation guide' and report "
+                "the APPROXIMATE NUMBER of tutorial results in the last 12 months.\n"
+                "   - Format: 'X YouTube videos in last 6 months', 'Y Reddit threads in "
+                "r/SideProject in last 3 months', 'Z Medium articles, most older than 2 years'.\n"
+                "   - Interpret: 50+ recent tutorials = saturated; 10-50 = growing awareness "
+                "(good timing); <10 = either too early or genuinely non-obvious.\n"
+                "   - Do NOT say 'low/medium/high' without a number backing it.\n\n"
+                "4. INCOME REALITY CHECK (required: primary-source evidence, not hearsay):\n"
+                "   - Search for people reporting ACTUAL income from this exact hustle.\n"
+                "   - Primary sources: Stripe screenshots, IndieHackers MRR pages, "
+                "YouTube payout dashboards, Reddit threads with imgur proof.\n"
+                "   - Secondary sources (weaker): Reddit comments with no proof, "
+                "blog posts, gurus selling courses about this.\n"
+                "   - Tag evidence_strength as 'strong' (primary source found), "
+                "'moderate' (credible but unverified), or 'weak' (gurus/hearsay only).\n"
+                "   - If evidence_strength = 'weak', this should weaken the verdict "
+                "significantly.\n\n"
+                "5. FAILURE STORIES (required: at least one):\n"
+                "   - Search for people who tried and quit this hustle. What specifically "
+                "made them give up? Time investment exceeded reward? Platform ban? "
+                "Market dried up? Legal cease-and-desist?\n"
+                "   - If you can't find a single failure story, that's a RED FLAG (either "
+                "survivorship bias is hiding failures, OR the hustle is too new to have "
+                "enough history).\n\n"
+                "6. KILL SCENARIO PROBABILITY: Beyond the kill_scenario string, assign a "
+                "probability:\n"
+                "   - LOW: <25% chance this kills the hustle within 12 months\n"
+                "   - MEDIUM: 25-60% chance\n"
+                "   - HIGH: >60% chance — should usually be a 'killed' verdict\n\n"
+                "7. VERDICT: Classify each opportunity:\n"
+                "   - SURVIVES: Holds up under scrutiny, kill probability LOW\n"
+                "   - WEAKENED: Still viable but with significant caveats, kill "
+                "probability MEDIUM\n"
+                "   - KILLED: Fatal flaws, kill probability HIGH, or evidence_strength weak + "
+                "no named predecessors (i.e. we can't even verify anyone has done it)\n\n"
+                "Be ruthlessly honest. A pipeline that ships 'survives' for every hustle "
+                "is useless. A good contrarian pass should kill at least 30% of incoming "
+                "opportunities.\n\n"
                 "OUTPUT: Respond with ONLY valid JSON:\n"
                 '{{\n'
                 '  "analyses": [\n'
                 '    {{\n'
                 '      "name": "string",\n'
-                '      "platform_risks": ["string"],\n'
-                '      "saturation_level": "string — low/medium/high with evidence",\n'
-                '      "legal_risks": ["string"],\n'
-                '      "income_reality": "string — what real people actually report earning",\n'
-                '      "verdict": "survives | weakened | killed",\n'
-                '      "verdict_reasoning": "string"\n'
+                '      "failed_predecessors": [\n'
+                '        {{"name": "string — handle or company", "year": "string", "reason": "string", "source": "string — URL"}}\n'
+                '      ],\n'
+                '      "platform_dependency": "string — platform name, or \'none\'",\n'
+                '      "platform_crackdown_evidence": [\n'
+                '        {{"platform": "string", "action": "string — ban/TOS update/API cut", "when": "string — date", "source": "string — URL"}}\n'
+                '      ],\n'
+                '      "saturation": {{\n'
+                '        "search_summary": "string — X tutorials in last Y months per platform",\n'
+                '        "saturation_level": "low|medium|high"\n'
+                '      }},\n'
+                '      "income_reality": {{\n'
+                '        "primary_source_links": ["string — URLs to Stripe/MRR/dashboard screenshots"],\n'
+                '        "typical_reported_income": "string — what real operators are making",\n'
+                '        "evidence_strength": "strong|moderate|weak"\n'
+                '      }},\n'
+                '      "failure_stories": [\n'
+                '        {{"quit_reason": "string", "source": "string — URL"}}\n'
+                '      ],\n'
+                '      "kill_scenario": "string — the most likely way this hustle dies",\n'
+                '      "kill_probability": "low|medium|high",\n'
+                '      "verdict": "survives|weakened|killed",\n'
+                '      "verdict_reasoning": "string — 3-5 sentences"\n'
                 '    }}\n'
-                '  ]\n'
+                '  ],\n'
+                '  "summary": "string — overall assessment including how many survived"\n'
                 '}}'
             ),
             "output_key": "contrarian",
             "condition": {"field": "feasibility", "operator": "not_empty"},
             "timeout_override": 1800,
+            "max_retries": 2,
+            "output_schema": "side_hustle_contrarian_v1",
+            "context_inputs": ["feasibility"],
         },
         # ──────────────────────────────────────────────────
         # Step 3: Synthesis and ranking
@@ -686,45 +891,102 @@ SIDE_HUSTLE_PIPELINE = {
             "name": "synthesis_and_ranking",
             "job_type": "research",
             "prompt_template": (
-                "Synthesize all research into a final ranking of automatable side hustles.\n\n"
+                "You are producing a final investment-grade ranking of automated side "
+                "hustles for a solo operator. Synthesize all previous research into a "
+                "definitive, COMPARATIVE ranking.\n\n"
                 "RESEARCH:\n{side_hustle_research}\n\n"
                 "FEASIBILITY:\n{feasibility}\n\n"
                 "CONTRARIAN:\n{contrarian}\n\n"
-                "INSTRUCTIONS:\n"
-                "1. Only include opportunities with 'survives' or 'weakened' verdicts.\n"
-                "2. Rank by total feasibility score, weighted by contrarian verdict.\n"
-                "3. For the top 3, provide a DETAILED n8n workflow specification:\n"
-                "   - What trigger node to use (schedule, webhook, etc.)\n"
-                "   - What processing nodes are needed (HTTP Request, Code, IF, Set, etc.)\n"
-                "   - What the data flow looks like step by step\n"
-                "   - What external accounts/API keys are needed\n"
-                "   - Expected runtime and frequency (e.g., runs every 6 hours)\n\n"
+                "INSTRUCTIONS:\n\n"
+                "1. ONLY include opportunities with 'survives' or 'weakened' verdicts. "
+                "Drop everything that was 'killed' in the contrarian step.\n\n"
+                "2. WEIGHTED SCORING — apply these weights to each surviving opportunity's "
+                "feasibility scores. Solo operators care most about revenue potential and "
+                "time to first dollar; long-term scalability matters less because the "
+                "operator can always build a second workflow.\n\n"
+                "   total_score = (revenue_potential × 1.5)\n"
+                "               + (time_to_first_dollar × 1.5)\n"
+                "               + (n8n_specific_feasibility × 1.0)\n"
+                "               + (maintenance_effort × 1.0)\n"
+                "               + (legal_safety × 1.0)\n"
+                "               + (scalability × 0.5)\n\n"
+                "   Maximum possible: 65. Round to 1 decimal place.\n\n"
+                "   Apply a contrarian adjustment AFTER the weighted sum:\n"
+                "   - 'survives' verdict: no change\n"
+                "   - 'weakened' verdict: multiply total_score by 0.8\n\n"
+                "3. RANK opportunities by adjusted total_score (highest first). For each "
+                "ranked entry, also write a 'head_to_head' field explaining WHY it beats "
+                "the opportunity ranked one position below it. The lowest-ranked entry "
+                "explains why it still made the cut instead of being dropped. This forces "
+                "real comparison instead of isolated scoring.\n\n"
+                "4. For the top 5 (or fewer if fewer survived), write a STRICT n8n_workflow_spec. "
+                "A spec here must be concrete enough that an engineer could build it without "
+                "needing to talk to you:\n\n"
+                "   - trigger_node: specific node type + config. For side hustle builds, "
+                "this MUST be 'n8n-nodes-base.webhook' (not Schedule or Manual) because "
+                "the test_run step triggers via webhook. Include the desired path slug "
+                "(kebab-case).\n"
+                "   - node_graph: ordered list of node types describing the data flow. "
+                "Each entry should name a specific node type and its role.\n"
+                "   - external_credentials: every OAuth app, API key, or account the user "
+                "must configure in n8n before activation. List them explicitly — 'Stripe "
+                "API key', 'OpenAI API key', 'Twitter OAuth 2 app', etc.\n"
+                "   - expected_runtime: realistic per-execution duration (e.g. '3-8 seconds').\n"
+                "   - frequency: how often the workflow should run (e.g. 'every 6 hours via "
+                "external cron hitting the webhook').\n"
+                "   - out_of_scope: exactly 3 features explicitly NOT in the v1. This "
+                "prevents Claude from over-engineering the workflow JSON during the build "
+                "step.\n"
+                "   - success_metric: how to know post-deploy whether the automation is "
+                "working. Must be OBSERVABLE (e.g. 'at least 5 qualified leads added to "
+                "airtable per day' not 'users are happy').\n"
+                "   - risky_assumption: the ONE belief that, if wrong, kills this side "
+                "hustle. Phrase it as a testable statement (e.g. 'people will pay $15/month "
+                "for an alert when any RV in a 100-mile radius drops by 20%+').\n\n"
+                "5. executive_summary: 2-3 paragraph overall recommendation. Include:\n"
+                "   - how many opportunities survived contrarian (out of how many started)\n"
+                "   - the single most important reason the rank-1 pick beats rank-2\n"
+                "   - what the user should budget for monthly API/tool costs across the "
+                "top 3\n"
+                "   - any cross-cutting risks that apply to multiple opportunities at once\n\n"
                 "OUTPUT: Respond with ONLY valid JSON:\n"
                 '{{\n'
                 '  "final_rankings": [\n'
                 '    {{\n'
                 '      "rank": 1,\n'
                 '      "name": "string",\n'
-                '      "one_liner": "string",\n'
-                '      "monthly_income_estimate": "string",\n'
-                '      "monthly_costs": "string",\n'
-                '      "total_score": 45,\n'
-                '      "surviving_risks": ["string"],\n'
+                '      "one_liner": "string — one sentence pitch",\n'
+                '      "monthly_income_estimate": "string — realistic range",\n'
+                '      "monthly_costs": "string — itemized tools",\n'
+                '      "contrarian_verdict": "survives|weakened",\n'
+                '      "raw_score": 45.5,\n'
+                '      "total_score": 36.4,\n'
+                '      "head_to_head": "string — why this beats the next-ranked opportunity",\n'
+                '      "surviving_risks": ["string — risks that remain after contrarian"],\n'
                 '      "n8n_workflow_spec": {{\n'
-                '        "trigger": "string — trigger node type and config",\n'
-                '        "steps": ["string — each processing step in order"],\n'
-                '        "external_accounts_needed": ["string — accounts/APIs to set up"],\n'
+                '        "trigger_node": "n8n-nodes-base.webhook with path: \'slug\'",\n'
+                '        "node_graph": [\n'
+                '          {{"node": "n8n-nodes-base.webhook", "role": "trigger"}},\n'
+                '          {{"node": "n8n-nodes-base.httpRequest", "role": "fetch data"}}\n'
+                '        ],\n'
+                '        "external_credentials": ["string — each credential to configure"],\n'
+                '        "expected_runtime": "string — seconds or minutes per run",\n'
                 '        "frequency": "string — how often it runs",\n'
-                '        "estimated_runtime": "string — how long each run takes"\n'
+                '        "out_of_scope": ["string — feature 1 NOT in v1", "string — feature 2", "string — feature 3"],\n'
+                '        "success_metric": "string — observable post-deploy measure",\n'
+                '        "risky_assumption": "string — the one testable belief"\n'
                 '      }}\n'
                 '    }}\n'
                 '  ],\n'
-                '  "executive_summary": "string — overall recommendation"\n'
+                '  "executive_summary": "string — 2-3 paragraphs"\n'
                 '}}'
             ),
             "output_key": "synthesis",
             "condition": {"field": "contrarian", "operator": "not_empty"},
             "timeout_override": 1800,
+            "max_retries": 2,
+            "output_schema": "side_hustle_synthesis_v1",
+            "context_inputs": ["side_hustle_research", "feasibility", "contrarian"],
         },
         # ──────────────────────────────────────────────────
         # Step 4: User picks a hustle
@@ -739,48 +1001,92 @@ SIDE_HUSTLE_PIPELINE = {
         # ──────────────────────────────────────────────────
         # Step 5: Build n8n workflow + supporting code
         # ──────────────────────────────────────────────────
+        # Round 4: this step MUST produce a Webhook trigger node in its
+        # workflow.json because the test_run step triggers execution via
+        # the webhook URL. A Schedule Trigger or Manual Trigger won't
+        # work because n8n's public REST API has no general-purpose
+        # "execute this workflow" endpoint.
         {
             "name": "build_n8n_workflow",
             "job_type": "builder",
             "prompt_template": (
                 "Build an n8n workflow automation for a side hustle.\n\n"
-                "SYNTHESIS AND WORKFLOW SPEC:\n{synthesis}\n\n"
+                "SELECTED OPPORTUNITY:\n{selected_hustle}\n\n"
                 "INSTRUCTIONS:\n"
-                "1. Create a valid n8n workflow JSON file called `workflow.json` in the current directory.\n"
-                "   The workflow must follow n8n's workflow format with proper nodes and connections.\n\n"
-                "2. Use the n8n_workflow_spec from the synthesis to guide the workflow design.\n\n"
-                "3. Include these n8n node types as appropriate:\n"
-                "   - Schedule Trigger or Webhook for triggering\n"
+                "1. Create a valid n8n workflow JSON file called `workflow.json` in the "
+                "current directory. The workflow must follow n8n's workflow format with "
+                "proper nodes and connections.\n\n"
+                "2. CRITICAL: the workflow MUST use a Webhook trigger node "
+                "(`n8n-nodes-base.webhook`) as its entry point — NOT a Schedule Trigger "
+                "or Manual Trigger. The parent system triggers this workflow by POSTing "
+                "to the webhook URL for the test run, and n8n's REST API does not expose "
+                "a general-purpose 'execute workflow' endpoint. Without a webhook trigger, "
+                "the test run will fail with 'no webhook URL available'.\n\n"
+                "3. The webhook trigger's `parameters.path` should be a short descriptive "
+                "slug unique to this side hustle (e.g. 'reddit-deal-scanner', "
+                "'price-arbitrage-notify'). Use kebab-case.\n\n"
+                "4. Include these n8n node types as appropriate after the trigger:\n"
                 "   - HTTP Request for API calls\n"
                 "   - Code node for custom JavaScript logic\n"
                 "   - IF node for conditional branching\n"
                 "   - Set node for data transformation\n"
                 "   - Any other standard n8n nodes needed\n\n"
-                "4. Create a README.md explaining:\n"
+                "5. Create a README.md explaining:\n"
                 "   - What this side hustle automation does\n"
                 "   - Expected income and costs\n"
                 "   - What accounts/credentials the user needs to set up in n8n\n"
+                "   - The webhook URL format and what payload it expects\n"
                 "   - How to configure and customize the workflow\n"
                 "   - Any manual steps required\n\n"
-                "5. Create any supporting files (scripts, config templates, etc.)\n\n"
-                "6. Write arlo_manifest.json including a 'workflow_json' key that contains "
-                "   the full contents of workflow.json (the n8n workflow definition).\n\n"
-                "IMPORTANT: The workflow.json must be valid n8n workflow JSON that can be "
-                "imported directly into n8n via its REST API."
+                "6. Create a BUILD_DECISIONS.md explaining:\n"
+                "   - Why you chose the specific node topology you did\n"
+                "   - Any tradeoffs you made\n"
+                "   - What features you intentionally did NOT build (out-of-scope)\n"
+                "   - How a user would test whether this side hustle actually makes money\n\n"
+                "7. Create a `test_payload.json` file containing a minimal JSON object that "
+                "can be POSTed to the webhook URL to exercise the workflow end-to-end. "
+                "This is what the test_run step will send. Make it realistic (not empty) "
+                "so the test actually runs through the full node graph.\n\n"
+                "8. Create any supporting files (scripts, config templates, etc.) as needed.\n\n"
+                "9. Write arlo_manifest.json including a 'workflow_json' key that contains "
+                "the full contents of workflow.json (the n8n workflow definition).\n\n"
+                "IMPORTANT: workflow.json must be valid n8n workflow JSON that can be "
+                "imported directly via n8n's REST API (n8n v2.15.0). It must have:\n"
+                "   - a `name` string\n"
+                "   - a `nodes` array (non-empty, including exactly one "
+                "n8n-nodes-base.webhook trigger)\n"
+                "   - a `connections` object (can be empty {} if there's only one node)\n"
+                "   - a `settings` object (empty {} is acceptable — n8n 2.x REJECTS "
+                "workflow creation without this field with a 400 error)\n"
+                "DO NOT omit the `settings` field. n8n v1 tolerated missing settings; "
+                "v2 does not."
             ),
             "output_key": "build_result",
             "condition": {"field": "synthesis", "operator": "not_empty"},
             "timeout_override": 1200,
+            "context_inputs": ["selected_hustle"],
+            "required_artifacts": [
+                "workflow.json",
+                "README.md",
+                "BUILD_DECISIONS.md",
+                "test_payload.json",
+            ],
         },
         # ──────────────────────────────────────────────────
         # Step 6: Deploy workflow to n8n
         # ──────────────────────────────────────────────────
+        # Round 4: the prompt is now a small static JSON instruction
+        # blob (no template substitution). The executor reads the
+        # previous builder step's result_data directly from the
+        # database via from_previous_build=true. This eliminates the
+        # old class of bugs where embedding {build_result} via
+        # str.format_map corrupted the JSON on any embedded quote or
+        # backslash in the builder output.
         {
             "name": "deploy_to_n8n",
             "job_type": "n8n",
             "prompt_template": (
-                '{{"action": "create", "activate": true, "workflow_json_from_build": true, '
-                '"build_result": {build_result}}}'
+                '{"action": "create", "activate": true, "from_previous_build": true}'
             ),
             "output_key": "deploy_result",
             "condition": {"field": "build_result", "operator": "not_empty"},
@@ -788,12 +1094,14 @@ SIDE_HUSTLE_PIPELINE = {
         # ──────────────────────────────────────────────────
         # Step 7: Test run (approval-gated)
         # ──────────────────────────────────────────────────
+        # Round 4: same static-JSON pattern as the deploy step. The
+        # executor reads webhook_url + n8n_workflow_id from the
+        # previous deploy step's result_data via from_previous_deploy=true.
         {
             "name": "test_run",
             "job_type": "n8n",
             "prompt_template": (
-                '{{"action": "execute", "n8n_workflow_id_from_deploy": true, '
-                '"deploy_result": {deploy_result}}}'
+                '{"action": "execute", "from_previous_deploy": true}'
             ),
             "output_key": "test_result",
             "condition": {"field": "deploy_result", "operator": "not_empty"},

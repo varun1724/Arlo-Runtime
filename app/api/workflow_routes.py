@@ -40,6 +40,18 @@ router = APIRouter(prefix="/workflows", tags=["workflows"], dependencies=[Depend
 # dependency injection doesn't require a bearer header.
 public_router = APIRouter(prefix="/workflows", tags=["workflows-public"])
 
+# Round 3 (side hustle): map a workflow's template_id to the
+# ``context_overrides`` key that ``approve_via_link`` should set when
+# the user clicks an approval link. Adding a new approval-gated
+# pipeline? Add its template_id here and map it to the appropriate
+# selected-* key. Unknown templates fall back to ``selected_idea``
+# which matches pre-Round-3 behavior.
+_TEMPLATE_OVERRIDE_KEY: dict[str, str] = {
+    "startup_idea_pipeline": "selected_idea",
+    "side_hustle_pipeline": "selected_hustle",
+    "freelance_scanner": "selected_hustle",
+}
+
 
 async def _workflow_to_response(row, db: AsyncSession | None = None) -> WorkflowResponse:
     """Convert a WorkflowRow to a WorkflowResponse.
@@ -385,11 +397,19 @@ async def approve_via_link(
                 _error_page(f"Choice #{choice} not found in synthesis."),
                 status_code=400,
             )
+        # Round 3: pick the context override key based on the template.
+        # Startup uses selected_idea; side hustle + freelance scanner
+        # use selected_hustle. Unknown templates fall back to
+        # selected_idea (matches pre-Round-3 behavior).
+        override_key = _TEMPLATE_OVERRIDE_KEY.get(
+            wf.template_id or "",
+            "selected_idea",
+        )
         await workflow_service.approve_step(
             db,
             workflow_id,
             approved=True,
-            context_overrides={"selected_idea": selected},
+            context_overrides={override_key: selected},
         )
         idea_name = selected.get("name", f"idea #{choice}")
         return HTMLResponse(

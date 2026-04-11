@@ -571,3 +571,266 @@ async def test_approve_via_link_wrong_purpose_token_rejected(unauthed_client):
         f"/workflows/{wf}/approve-link/{token}",
     )
     assert r.status_code == 401
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 3 (side hustle): pipeline-aware approve flows
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def _setup_side_hustle_workflow_with_synthesis(
+    client, name: str, synthesis_payload: dict | str
+) -> uuid.UUID:
+    """Round 3 variant of ``_setup_workflow_with_synthesis`` that
+    creates a workflow with ``template_id="side_hustle_pipeline"`` and
+    a downstream step whose ``context_inputs`` contains
+    ``selected_hustle`` (not ``selected_idea``).
+
+    The template_id matters because ``approve_via_link`` uses it to
+    pick the correct override key from ``_TEMPLATE_OVERRIDE_KEY``. The
+    context_inputs matter because ``approve_step``'s fallback walks
+    them to decide which ``selected_*`` keys to populate.
+    """
+    from sqlalchemy import select
+
+    from app.db.engine import async_session
+    from app.db.models import JobRow
+    from app.models.job import JobStatus
+    from app.services.workflow_service import advance_workflow
+
+    create = await client.post(
+        "/workflows",
+        json={
+            "name": name,
+            "template_id": "side_hustle_pipeline",
+            "steps": [
+                {
+                    "name": "fake_synthesis",
+                    "job_type": "research",
+                    "prompt_template": "Pretend",
+                    "output_key": "synthesis",
+                },
+                {
+                    "name": "fake_approval",
+                    "job_type": "research",
+                    "prompt_template": "approval",
+                    "output_key": "_approval",
+                    "requires_approval": True,
+                },
+                {
+                    "name": "fake_build",
+                    "job_type": "research",
+                    "prompt_template": "Build for: {selected_hustle}",
+                    "output_key": "build_result",
+                    "context_inputs": ["selected_hustle"],
+                },
+            ],
+            "initial_context": {},
+        },
+    )
+    assert create.status_code == 201, create.text
+    workflow_id = uuid.UUID(create.json()["id"])
+
+    async with async_session() as session:
+        first_job = (
+            await session.execute(select(JobRow).where(JobRow.workflow_id == workflow_id))
+        ).scalars().one()
+        first_job.status = JobStatus.SUCCEEDED.value
+        first_job.result_data = (
+            json.dumps(synthesis_payload)
+            if not isinstance(synthesis_payload, str)
+            else synthesis_payload
+        )
+        first_job.completed_at = datetime.now(timezone.utc)
+        await session.commit()
+        await advance_workflow(session, workflow_id)
+
+    return workflow_id
+
+
+@pytest.mark.asyncio
+async def test_approve_step_fallback_populates_selected_hustle(client):
+    """Round 3: when downstream steps need selected_hustle and no
+    override is provided, the fallback populates it from rank-1."""
+    from app.db.engine import async_session
+    from app.db.models import WorkflowRow
+
+    workflow_id = await _setup_side_hustle_workflow_with_synthesis(
+        client,
+        "sh_fallback_rank1",
+        {
+            "final_rankings": [
+                {"rank": 1, "name": "reddit scanner", "one_liner": "curated deals"},
+                {"rank": 2, "name": "newsletter bot", "one_liner": "curated articles"},
+            ],
+            "executive_summary": "two hustles",
+        },
+    )
+
+    # POST approve with NO context_overrides — fallback should fire
+    approve = await client.post(
+        f"/workflows/{workflow_id}/approve",
+        json={"approved": True},
+    )
+    assert approve.status_code == 200, approve.text
+
+    async with async_session() as session:
+        wf = await session.get(WorkflowRow, workflow_id)
+        ctx = json.loads(wf.context)
+        # The Round 3 fallback must populate selected_hustle, NOT selected_idea
+        assert "selected_hustle" in ctx
+        assert ctx["selected_hustle"]["name"] == "reddit scanner"
+        assert "selected_idea" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_approve_step_fallback_still_populates_selected_idea_for_startup(client):
+    """Round 3 regression: the startup pipeline's selected_idea
+    fallback must still work after the pipeline-aware rewrite."""
+    from app.db.engine import async_session
+    from app.db.models import WorkflowRow
+
+    workflow_id = await _setup_workflow_with_synthesis(
+        client,
+        "startup_fallback_rank1",
+        {
+            "final_rankings": [
+                {"rank": 1, "name": "alpha startup", "one_liner": "a"},
+                {"rank": 2, "name": "beta startup", "one_liner": "b"},
+            ],
+            "executive_summary": "two ideas",
+        },
+    )
+
+    approve = await client.post(
+        f"/workflows/{workflow_id}/approve",
+        json={"approved": True},
+    )
+    assert approve.status_code == 200, approve.text
+
+    async with async_session() as session:
+        wf = await session.get(WorkflowRow, workflow_id)
+        ctx = json.loads(wf.context)
+        assert "selected_idea" in ctx
+        assert ctx["selected_idea"]["name"] == "alpha startup"
+
+
+@pytest.mark.asyncio
+async def test_side_hustle_approve_via_link_populates_selected_hustle(unauthed_client):
+    """Round 3 headline: clicking a side hustle approval link injects
+    `selected_hustle` (not `selected_idea`) into the workflow context,
+    so the downstream build step renders its prompt correctly."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.core.config import settings as s
+    from app.db.engine import async_session
+    from app.db.models import WorkflowRow
+    from app.main import app as _app
+    from app.models.workflow import WorkflowStatus
+    from app.services.signed_urls import sign_token
+
+    async with AsyncClient(transport=ASGITransport(app=_app), base_url="http://test") as authed:
+        authed.headers["Authorization"] = f"Bearer {s.arlo_auth_token}"
+        workflow_id = await _setup_side_hustle_workflow_with_synthesis(
+            authed,
+            "sh_approve_link_valid",
+            {
+                "final_rankings": [
+                    {"rank": 1, "name": "alpha hustle", "one_liner": "a"},
+                    {"rank": 2, "name": "beta hustle", "one_liner": "b"},
+                    {"rank": 3, "name": "gamma hustle", "one_liner": "c"},
+                ],
+                "executive_summary": "test",
+            },
+        )
+
+    token = sign_token(workflow_id, "approve", choice=2)
+    r = await unauthed_client.get(f"/workflows/{workflow_id}/approve-link/{token}")
+
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("text/html")
+    assert "beta hustle" in r.text
+
+    # Verify the CRUCIAL assertion: the context has selected_hustle,
+    # NOT selected_idea. Without the Round 3 pipeline-aware fix, the
+    # override would have been placed under the wrong key.
+    async with async_session() as session:
+        wf = await session.get(WorkflowRow, workflow_id)
+        assert wf.status == WorkflowStatus.RUNNING.value
+        ctx = json.loads(wf.context)
+        assert "selected_hustle" in ctx
+        assert ctx["selected_hustle"]["name"] == "beta hustle"
+        assert "selected_idea" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_side_hustle_approve_via_link_choice_zero_skips(unauthed_client):
+    """Skipping a side hustle approval link still works — choice=0 is
+    template-agnostic and just calls approve_step(approved=False)."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.core.config import settings as s
+    from app.main import app as _app
+    from app.services.signed_urls import sign_token
+
+    async with AsyncClient(transport=ASGITransport(app=_app), base_url="http://test") as authed:
+        authed.headers["Authorization"] = f"Bearer {s.arlo_auth_token}"
+        workflow_id = await _setup_side_hustle_workflow_with_synthesis(
+            authed,
+            "sh_approve_link_skip",
+            {
+                "final_rankings": [
+                    {"rank": 1, "name": "x", "one_liner": "x"},
+                    {"rank": 2, "name": "y", "one_liner": "y"},
+                ],
+                "executive_summary": "test",
+            },
+        )
+
+    skip_token = sign_token(workflow_id, "approve", choice=0)
+    r = await unauthed_client.get(
+        f"/workflows/{workflow_id}/approve-link/{skip_token}",
+    )
+    assert r.status_code == 200
+    assert "Skipped" in r.text or "skip" in r.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_side_hustle_approve_via_link_unknown_template_falls_back_to_selected_idea(
+    unauthed_client,
+):
+    """Round 3 regression: a workflow with a template_id NOT in
+    _TEMPLATE_OVERRIDE_KEY must still work — fallback to selected_idea
+    so pre-Round-3 behavior is preserved for any unknown template."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.core.config import settings as s
+    from app.db.engine import async_session
+    from app.db.models import WorkflowRow
+    from app.main import app as _app
+    from app.services.signed_urls import sign_token
+
+    async with AsyncClient(transport=ASGITransport(app=_app), base_url="http://test") as authed:
+        authed.headers["Authorization"] = f"Bearer {s.arlo_auth_token}"
+        # Startup synthesis helper: template_id is NOT passed → stays None
+        workflow_id = await _setup_workflow_with_synthesis(
+            authed,
+            "unknown_template_fallback",
+            {
+                "final_rankings": [
+                    {"rank": 1, "name": "alpha", "one_liner": "a"},
+                ],
+                "executive_summary": "test",
+            },
+        )
+
+    token = sign_token(workflow_id, "approve", choice=1)
+    r = await unauthed_client.get(f"/workflows/{workflow_id}/approve-link/{token}")
+
+    assert r.status_code == 200, r.text
+    async with async_session() as session:
+        wf = await session.get(WorkflowRow, workflow_id)
+        ctx = json.loads(wf.context)
+        # Unknown template_id falls back to selected_idea
+        assert "selected_idea" in ctx
+        assert ctx["selected_idea"]["name"] == "alpha"

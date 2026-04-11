@@ -130,3 +130,46 @@ async def test_step_loop_condition_defaults_to_none():
         max_loop_count=10,
     )
     assert step.loop_condition is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 4 (side hustle): StepDefinition.required_artifacts
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_step_definition_accepts_required_artifacts():
+    """Round 4: per-step builder enforcement list. The side hustle
+    build_n8n_workflow step requires workflow.json and test_payload.json
+    on top of the default README/BUILD_DECISIONS pair."""
+    step = StepDefinition(
+        name="build_n8n_workflow",
+        job_type="builder",
+        prompt_template="build the workflow",
+        output_key="build_result",
+        required_artifacts=[
+            "workflow.json",
+            "README.md",
+            "BUILD_DECISIONS.md",
+            "test_payload.json",
+        ],
+    )
+    assert step.required_artifacts == [
+        "workflow.json",
+        "README.md",
+        "BUILD_DECISIONS.md",
+        "test_payload.json",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_step_definition_required_artifacts_defaults_to_none():
+    """Backward compat: existing templates without required_artifacts
+    keep their current behavior (builder falls back to REQUIRED_BUILDER_ARTIFACTS)."""
+    step = StepDefinition(
+        name="build_mvp",
+        job_type="builder",
+        prompt_template="build",
+        output_key="mvp_result",
+    )
+    assert step.required_artifacts is None
