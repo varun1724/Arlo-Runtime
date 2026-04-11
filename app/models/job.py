@@ -45,7 +45,16 @@ TERMINAL_STATUSES = {
 
 class CreateJobRequest(BaseModel):
     job_type: JobType
-    prompt: str = Field(..., min_length=1, max_length=100000)
+    # Round 5.6 hotfix: deep_research_mode produces landscape + deep_dive +
+    # contrarian outputs that the synthesis step stacks into a single prompt
+    # via {landscape}{deep_dive}{contrarian} substitution. First real deep
+    # run hit ~197k chars at the synthesis step and tripped the old 100k
+    # cap. The new limit (1M chars ≈ 250k tokens) sits well inside Claude
+    # Sonnet 4.6's 200k-token context window while still catching runaway
+    # prompts before they reach the CLI. Leave this as a validation limit,
+    # not an unbounded field — the cap catches real bugs (e.g. a template
+    # that accidentally interpolates a circular reference).
+    prompt: str = Field(..., min_length=1, max_length=1_000_000)
 
 
 # --- Response models ---
