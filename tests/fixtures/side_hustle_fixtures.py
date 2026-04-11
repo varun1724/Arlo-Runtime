@@ -272,6 +272,37 @@ INVALID_RESEARCH_BAD_TIMING_TYPE: dict = {
     "sources_consulted": ["source 1", "source 2", "source 3"],
 }
 
+# Round 5.A1: opportunity flagged as obvious (check="yes") but missing
+# the required justification. Schema's @model_validator rejects this.
+INVALID_RESEARCH_OBVIOUS_WITHOUT_JUSTIFICATION: dict = {
+    "opportunities": [
+        {
+            **_minimal_opportunity("Obvious Without Reason"),
+            "non_obviousness_check": "yes",
+            "non_obviousness_justification": None,
+        },
+        *[_minimal_opportunity(f"Opp {i}") for i in range(7)],
+    ],
+    "sources_consulted": ["source 1", "source 2", "source 3"],
+}
+
+# Round 5.A1: same as above but with a non-empty justification —
+# should validate successfully. Positive control for the same path.
+VALID_RESEARCH_OBVIOUS_WITH_JUSTIFICATION: dict = {
+    "opportunities": [
+        {
+            **_minimal_opportunity("Obvious With Reason"),
+            "non_obviousness_check": "yes",
+            "non_obviousness_justification": (
+                "Included despite being obvious because the saturation is "
+                "lower than expected in this specific geographic niche."
+            ),
+        },
+        *[_minimal_opportunity(f"Opp {i}") for i in range(7)],
+    ],
+    "sources_consulted": ["source 1", "source 2", "source 3"],
+}
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Step 1: evaluate_feasibility
@@ -446,6 +477,9 @@ VALID_SIDE_HUSTLE_CONTRARIAN: dict = {
 }
 
 MINIMAL_SIDE_HUSTLE_CONTRARIAN: dict = {
+    # Round 5.A2 note: keeping 5 here even though min_length is now 3,
+    # because this fixture is also used by the prompt-schema alignment
+    # test which tiles lists to a specific count. 5 is still valid.
     "analyses": [_minimal_contrarian_analysis(f"Hustle {i}") for i in range(5)],
     "summary": (
         "All five analyses passed minimum schema checks for structural test "
@@ -453,9 +487,22 @@ MINIMAL_SIDE_HUSTLE_CONTRARIAN: dict = {
     ),
 }
 
+# Round 5.A2: dropped from 3 to 2 because the schema's min_length is
+# now 3, so 3 is valid. 2 is the first count that still fails.
 INVALID_CONTRARIAN_FEW_ANALYSES: dict = {
+    "analyses": [_minimal_contrarian_analysis(f"Hustle {i}") for i in range(2)],
+    "summary": "Too few analyses to pass the min_length=3 check.",
+}
+
+# Round 5.A2: exactly 3 analyses — the new floor. Must validate
+# successfully so the contrarian step can ship with an aggressive
+# kill-rate (as instructed by the prompt) without schema friction.
+THREE_ANALYSIS_CONTRARIAN: dict = {
     "analyses": [_minimal_contrarian_analysis(f"Hustle {i}") for i in range(3)],
-    "summary": "Too few analyses to pass the min_length=5 check.",
+    "summary": (
+        "Exactly three survivors remained after a ruthless contrarian "
+        "pass. Meets the Round 5 min_length=3 floor."
+    ),
 }
 
 INVALID_CONTRARIAN_BAD_VERDICT: dict = {

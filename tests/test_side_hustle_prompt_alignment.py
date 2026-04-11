@@ -168,11 +168,11 @@ def test_evaluate_feasibility_prompt_example_matches_schema():
 
 
 def test_contrarian_analysis_prompt_example_matches_schema():
-    """Step 2: analyses list (min_length=5) needs tiling."""
+    """Step 2: analyses list (min_length=3 as of Round 5.A2) needs tiling."""
     _alignment_check(
         "contrarian_analysis",
         SideHustleContrarianResult,
-        repeat_list_items={"analyses": 5},
+        repeat_list_items={"analyses": 3},
     )
 
 

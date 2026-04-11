@@ -35,6 +35,7 @@ from tests.fixtures.side_hustle_fixtures import (
     INVALID_RESEARCH_BAD_TIMING_TYPE,
     INVALID_RESEARCH_FEW_OPPS,
     INVALID_RESEARCH_MISSING_FIELD,
+    INVALID_RESEARCH_OBVIOUS_WITHOUT_JUSTIFICATION,
     INVALID_SYNTHESIS_FEW_RANKINGS,
     INVALID_SYNTHESIS_SPEC_MISSING_FIELD,
     INVALID_SYNTHESIS_SPEC_WRONG_OUT_OF_SCOPE_COUNT,
@@ -42,6 +43,8 @@ from tests.fixtures.side_hustle_fixtures import (
     MINIMAL_SIDE_HUSTLE_FEASIBILITY,
     MINIMAL_SIDE_HUSTLE_RESEARCH,
     MINIMAL_SIDE_HUSTLE_SYNTHESIS,
+    THREE_ANALYSIS_CONTRARIAN,
+    VALID_RESEARCH_OBVIOUS_WITH_JUSTIFICATION,
     VALID_SIDE_HUSTLE_CONTRARIAN,
     VALID_SIDE_HUSTLE_FEASIBILITY,
     VALID_SIDE_HUSTLE_RESEARCH,
@@ -244,3 +247,87 @@ def test_side_hustle_pipeline_steps_all_have_registered_schemas():
             assert schema_name in STEP_OUTPUT_SCHEMAS, (
                 f"step '{step['name']}' references missing schema '{schema_name}'"
             )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 5.A1: non_obviousness_justification conditional validator
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_research_rejects_obvious_opportunity_without_justification():
+    """Round 5.A1: an opportunity flagged as obvious (check='yes') must
+    include a non-empty non_obviousness_justification. The schema's
+    @model_validator enforces this conditional requirement that
+    plain Field declarations can't express."""
+    with pytest.raises(ValidationError) as exc:
+        SideHustleResearchResult.model_validate(
+            INVALID_RESEARCH_OBVIOUS_WITHOUT_JUSTIFICATION
+        )
+    msg = str(exc.value)
+    assert "non_obviousness_justification" in msg
+    # The error message must tell Claude what to fix so retries are
+    # more likely to succeed.
+    assert "yes" in msg or "obvious" in msg.lower()
+
+
+def test_research_accepts_obvious_opportunity_with_justification():
+    """Round 5.A1 positive control: same shape but with a real
+    justification string — validates cleanly."""
+    result = SideHustleResearchResult.model_validate(
+        VALID_RESEARCH_OBVIOUS_WITH_JUSTIFICATION
+    )
+    obvious = next(
+        o for o in result.opportunities if o.non_obviousness_check == "yes"
+    )
+    assert obvious.non_obviousness_justification is not None
+    assert len(obvious.non_obviousness_justification) > 0
+
+
+def test_research_accepts_empty_justification_when_check_is_no():
+    """Round 5.A1: when non_obviousness_check='no', the justification
+    field stays optional — the validator must not fire."""
+    payload = {
+        "opportunities": [
+            {
+                # Copy of _minimal_opportunity but with explicit non-obvious
+                "name": "Non-Obvious Opp",
+                "description": "A non-obvious side hustle description here.",
+                "automation_approach": "Use n8n HTTP Request node",
+                "timing_signal_type": "TECHNOLOGY_UNLOCK",
+                "timing_signal": "An API became available in early 2025",
+                "income_evidence": {
+                    "source_url": "https://indiehackers.com/example",
+                    "source_type": "indie_hackers_mrr",
+                    "claimed_income": "$1,200/mo",
+                },
+                "income_range": "$100-500/mo",
+                "tools_needed": ["Some API"],
+                "non_obviousness_check": "no",
+                "non_obviousness_justification": None,  # intentionally null
+                "automation_realness_check": "fully_automated",
+            },
+        ]
+        + MINIMAL_SIDE_HUSTLE_RESEARCH["opportunities"][1:],
+        "sources_consulted": MINIMAL_SIDE_HUSTLE_RESEARCH["sources_consulted"],
+    }
+    # Should NOT raise — check='no' means justification isn't required
+    SideHustleResearchResult.model_validate(payload)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 5.A2: contrarian min_length lowered from 5 to 3
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_contrarian_accepts_exactly_three_analyses():
+    """Round 5.A2: the new floor is 3 (was 5). A contrarian step
+    that kills aggressively and leaves 3 survivors must validate."""
+    result = SideHustleContrarianResult.model_validate(THREE_ANALYSIS_CONTRARIAN)
+    assert len(result.analyses) == 3
+
+
+def test_contrarian_still_rejects_two_analyses():
+    """Round 5.A2: 2 analyses is still below the floor."""
+    with pytest.raises(ValidationError) as exc:
+        SideHustleContrarianResult.model_validate(INVALID_CONTRARIAN_FEW_ANALYSES)
+    assert "analyses" in str(exc.value).lower()

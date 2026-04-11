@@ -469,3 +469,187 @@ async def test_invalid_prompt_json_fails_cleanly():
         updated = result.scalars().first()
         assert updated.status == "failed"
         assert "valid JSON" in updated.error_message
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 5.A3: execution row lookup fallback + verification audit field
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_execute_sets_audit_field_on_webhook_only_fallback():
+    """Round 5.A3: when get_latest_execution_for_workflow returns
+    None for all retries, the executor falls back to webhook-2xx-only
+    success AND sets result.execution_verification = 'webhook_2xx_only'
+    so downstream consumers can distinguish a verified run from a
+    webhook-accept-only signal."""
+    from app.db.engine import async_session
+    from app.db.models import JobRow, WorkflowRow
+    from app.jobs.n8n import execute_n8n_job
+
+    wf_id = uuid.uuid4()
+    deploy_job_id = uuid.uuid4()
+    test_job_id = uuid.uuid4()
+
+    async with async_session() as session:
+        session.add(WorkflowRow(
+            id=wf_id, name="a3-fallback",
+            status="running", context="{}",
+            step_definitions="[]", current_step_index=1,
+        ))
+        await session.commit()
+
+    async with async_session() as session:
+        session.add(JobRow(
+            id=deploy_job_id,
+            job_type="n8n",
+            status="succeeded",
+            prompt="deploy",
+            workflow_id=wf_id,
+            step_index=0,
+            result_data=json.dumps({
+                "n8n_workflow_id": "wf-abc",
+                "webhook_url": "http://n8n:5678/webhook/a3",
+            }),
+            started_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc),
+        ))
+        session.add(JobRow(
+            id=test_job_id,
+            job_type="n8n",
+            status="running",
+            prompt=json.dumps({
+                "action": "execute",
+                "from_previous_deploy": True,
+            }),
+            workflow_id=wf_id,
+            step_index=1,
+            started_at=datetime.now(timezone.utc),
+        ))
+        await session.commit()
+
+        mock_client = AsyncMock()
+        mock_client.trigger_webhook = AsyncMock(
+            return_value={"_status_code": 200, "message": "Workflow was started"}
+        )
+        # Always return None → fallback path fires
+        mock_client.get_latest_execution_for_workflow = AsyncMock(return_value=None)
+
+        with _patch_n8n_client(mock_client), \
+             patch("app.jobs.n8n.asyncio.sleep", new=AsyncMock()):
+            from sqlalchemy import select
+            row_result = await session.execute(
+                select(JobRow).where(JobRow.id == test_job_id)
+            )
+            job_row = row_result.scalars().first()
+            await execute_n8n_job(session, job_row)
+
+        row_result = await session.execute(
+            select(JobRow).where(JobRow.id == test_job_id)
+        )
+        updated = row_result.scalars().first()
+        assert updated.status == "succeeded"
+        payload = json.loads(updated.result_data)
+        assert payload["execution_status"] == "success"
+        assert payload["execution_verification"] == "webhook_2xx_only"
+
+    # Round 5.A3 bumped retries from 3 to 6
+    from app.jobs.n8n import _POLL_EXECUTION_ROW_RETRIES
+    assert _POLL_EXECUTION_ROW_RETRIES == 6
+    assert mock_client.get_latest_execution_for_workflow.await_count == _POLL_EXECUTION_ROW_RETRIES
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 5.A4: json.dumps sanitization for exotic webhook responses
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_execute_sanitizes_datetime_in_webhook_response():
+    """Round 5.A4: if trigger_webhook returns a dict containing a
+    non-JSON-serializable value (datetime, Decimal, custom object),
+    the finalize step's json.dumps would crash. The _sanitize_for_json
+    fallback must coerce the value to a string and let the job
+    succeed."""
+    from app.db.engine import async_session
+    from app.db.models import JobRow, WorkflowRow
+    from app.jobs.n8n import execute_n8n_job
+
+    wf_id = uuid.uuid4()
+    deploy_job_id = uuid.uuid4()
+    test_job_id = uuid.uuid4()
+
+    async with async_session() as session:
+        session.add(WorkflowRow(
+            id=wf_id, name="a4-sanitize",
+            status="running", context="{}",
+            step_definitions="[]", current_step_index=1,
+        ))
+        await session.commit()
+
+    async with async_session() as session:
+        session.add(JobRow(
+            id=deploy_job_id,
+            job_type="n8n",
+            status="succeeded",
+            prompt="deploy",
+            workflow_id=wf_id,
+            step_index=0,
+            result_data=json.dumps({
+                "n8n_workflow_id": "wf-xyz",
+                "webhook_url": "http://n8n:5678/webhook/a4",
+            }),
+            started_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(timezone.utc),
+        ))
+        session.add(JobRow(
+            id=test_job_id,
+            job_type="n8n",
+            status="running",
+            prompt=json.dumps({
+                "action": "execute",
+                "from_previous_deploy": True,
+            }),
+            workflow_id=wf_id,
+            step_index=1,
+            started_at=datetime.now(timezone.utc),
+        ))
+        await session.commit()
+
+        # Webhook response contains a datetime — json.dumps would crash
+        # without the sanitizer fallback.
+        exotic_timestamp = datetime(2026, 4, 11, 12, 0, 0, tzinfo=timezone.utc)
+        mock_client = AsyncMock()
+        mock_client.trigger_webhook = AsyncMock(
+            return_value={
+                "_status_code": 200,
+                "created_at": exotic_timestamp,
+                "items": [1, 2, 3],
+            }
+        )
+        mock_client.get_latest_execution_for_workflow = AsyncMock(return_value=None)
+
+        with _patch_n8n_client(mock_client), \
+             patch("app.jobs.n8n.asyncio.sleep", new=AsyncMock()):
+            from sqlalchemy import select
+            row_result = await session.execute(
+                select(JobRow).where(JobRow.id == test_job_id)
+            )
+            job_row = row_result.scalars().first()
+            await execute_n8n_job(session, job_row)
+
+        row_result = await session.execute(
+            select(JobRow).where(JobRow.id == test_job_id)
+        )
+        updated = row_result.scalars().first()
+        # The job must succeed despite the exotic value
+        assert updated.status == "succeeded"
+        # The datetime must be stringified in the stored result_data
+        payload = json.loads(updated.result_data)
+        assert "webhook_response" in payload
+        wh = payload["webhook_response"]
+        # After sanitization the datetime is a string
+        assert isinstance(wh["created_at"], str)
+        assert "2026" in wh["created_at"]
+        # Non-exotic values are preserved
+        assert wh["items"] == [1, 2, 3]

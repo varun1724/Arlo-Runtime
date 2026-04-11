@@ -592,3 +592,80 @@ async def test_get_latest_execution_for_workflow_returns_none_when_no_match():
         found = await client.get_latest_execution_for_workflow("target-wf")
 
     assert found is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 5.A6: poll_execution unknown-status termination
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_poll_execution_raises_on_too_many_unknown_statuses():
+    """Round 5.A6: if n8n returns an unrecognized status string
+    _MAX_CONSECUTIVE_UNKNOWN_POLLS times in a row, poll_execution
+    must raise N8nUnknownStatusError instead of spinning until the
+    full execution timeout.
+    """
+    from app.tools.n8n import (
+        N8nUnknownStatusError,
+        _MAX_CONSECUTIVE_UNKNOWN_POLLS,
+    )
+
+    # Return an unrecognized status every single call
+    unknown_response = _mock_response(200, json_body={"status": "suspended"})
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(return_value=unknown_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("app.tools.n8n.httpx.AsyncClient", MagicMock(return_value=mock_client)), \
+         patch("app.tools.n8n.asyncio.sleep", new=AsyncMock()):
+        client = N8nClient()
+        with pytest.raises(N8nUnknownStatusError) as exc_info:
+            await client.poll_execution("exec-42", timeout=600, interval=1)
+
+    # Error message must name the raw status so operators can update
+    # _normalize_execution_status to handle it.
+    msg = str(exc_info.value)
+    assert "suspended" in msg
+    assert "exec-42" in msg
+    # And must explain what to do next
+    assert "_normalize_execution_status" in msg or "update" in msg.lower()
+
+    # Should have given up after _MAX_CONSECUTIVE_UNKNOWN_POLLS calls
+    # (+/- 1 depending on when the exception fires vs the next fetch).
+    assert mock_client.request.call_count == _MAX_CONSECUTIVE_UNKNOWN_POLLS
+
+
+@pytest.mark.asyncio
+async def test_poll_execution_resets_unknown_counter_on_recognized_status():
+    """Round 5.A6: consecutive unknowns must reset when a recognized
+    status appears. An intermittent unknown status shouldn't trip the
+    limit."""
+    from app.tools.n8n import _MAX_CONSECUTIVE_UNKNOWN_POLLS
+
+    # Sequence: unknown, unknown, running (reset!), unknown, unknown, running, success
+    responses = [
+        _mock_response(200, json_body={"status": "mystery"}),
+        _mock_response(200, json_body={"status": "mystery"}),
+        _mock_response(200, json_body={"status": "running"}),
+        _mock_response(200, json_body={"status": "mystery"}),
+        _mock_response(200, json_body={"status": "mystery"}),
+        _mock_response(200, json_body={"status": "running"}),
+        _mock_response(200, json_body={"status": "success"}),
+    ]
+    mock_client = AsyncMock()
+    mock_client.request = AsyncMock(side_effect=responses)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("app.tools.n8n.httpx.AsyncClient", MagicMock(return_value=mock_client)), \
+         patch("app.tools.n8n.asyncio.sleep", new=AsyncMock()):
+        client = N8nClient()
+        # With _MAX_CONSECUTIVE_UNKNOWN_POLLS >= 3, the reset-after-
+        # running sequence above never accumulates enough consecutive
+        # unknowns to trip the limit. Must complete normally.
+        assert _MAX_CONSECUTIVE_UNKNOWN_POLLS >= 3
+        result = await client.poll_execution("exec-1", timeout=600, interval=1)
+
+    assert result["status"] == "success"

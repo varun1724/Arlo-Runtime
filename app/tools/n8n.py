@@ -88,6 +88,23 @@ class N8nWorkflowValidationError(N8nError):
     """
 
 
+class N8nUnknownStatusError(N8nError):
+    """Round 5.A6: raised by ``poll_execution`` after too many
+    consecutive unknown execution statuses.
+
+    ``_normalize_execution_status`` returns ``"unknown"`` when n8n
+    returns a status string the helper doesn't recognize. Before
+    Round 5, the poll loop would keep going until it hit the full
+    execution timeout (10 min) — wasting time whenever a new n8n
+    release added a status value we hadn't taught the normalizer.
+
+    This exception fires after ``_MAX_CONSECUTIVE_UNKNOWN_POLLS`` in
+    a row and names the raw status field in the message, so an
+    operator updating to a new n8n version gets an actionable error
+    instead of a vague timeout.
+    """
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Status normalization
 # ─────────────────────────────────────────────────────────────────────
@@ -97,6 +114,12 @@ class N8nWorkflowValidationError(N8nError):
 _TERMINAL_STATUSES = frozenset({"success", "error", "failed", "canceled", "crashed"})
 # Success statuses — used by callers to decide if the run was OK.
 _SUCCESS_STATUSES = frozenset({"success"})
+
+# Round 5.A6: how many consecutive 'unknown' normalized statuses
+# poll_execution tolerates before raising N8nUnknownStatusError.
+# Five polls at the default interval (5s) gives ~25s of head-scratching
+# before giving up. Reset to 0 on any non-unknown status.
+_MAX_CONSECUTIVE_UNKNOWN_POLLS = 5
 
 
 def _normalize_execution_status(execution: dict[str, Any]) -> str:
@@ -463,8 +486,14 @@ class N8nClient:
         Calls ``on_progress`` once per poll interval with a snapshot
         dict so callers can update the job's progress_message column.
 
-        Raises ``N8nTimeoutError`` if the execution doesn't terminate
-        before the timeout.
+        Raises:
+            N8nTimeoutError: execution didn't terminate before the timeout.
+            N8nUnknownStatusError: Round 5.A6 — raised if the normalizer
+                returns ``"unknown"`` for ``_MAX_CONSECUTIVE_UNKNOWN_POLLS``
+                polls in a row. Indicates n8n may have added a status
+                value ``_normalize_execution_status`` doesn't handle yet.
+                The error message names the raw status so callers can
+                quickly update the normalizer.
         """
         if timeout is None:
             timeout = settings.n8n_execution_timeout_seconds
@@ -472,9 +501,30 @@ class N8nClient:
             interval = settings.n8n_poll_interval_seconds
 
         elapsed = 0
+        consecutive_unknown = 0
+        last_raw_status: str | None = None
+
         while elapsed < timeout:
             execution = await self.get_execution(execution_id)
             status = _normalize_execution_status(execution)
+
+            if status == "unknown":
+                consecutive_unknown += 1
+                last_raw_status = (
+                    execution.get("status") if isinstance(execution, dict)
+                    else None
+                )
+                if consecutive_unknown >= _MAX_CONSECUTIVE_UNKNOWN_POLLS:
+                    raise N8nUnknownStatusError(
+                        f"Execution {execution_id} returned an unknown "
+                        f"status {consecutive_unknown} times in a row; "
+                        f"last raw status was {last_raw_status!r}. n8n "
+                        f"may have added a status value "
+                        f"_normalize_execution_status doesn't handle. "
+                        f"Update the helper and retry."
+                    )
+            else:
+                consecutive_unknown = 0
 
             if on_progress is not None:
                 snapshot = {

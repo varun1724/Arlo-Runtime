@@ -40,6 +40,30 @@ logger = logging.getLogger("arlo.notifications")
 EventType = Literal["awaiting_approval", "build_complete", "workflow_failed"]
 
 
+# Round 5.B2: pipeline-aware rendering dispatch. Each template_id
+# maps to the renderer that knows how to format that pipeline's
+# synthesis shape. Unknown templates fall back to the startup
+# renderer (matching the Round 3 _TEMPLATE_OVERRIDE_KEY pattern —
+# zero regression for any pipeline that doesn't register here).
+# Adding a new pipeline with its own synthesis shape? Add a new
+# renderer in report_renderer.py and register its template_id here.
+_RENDERER_BY_TEMPLATE: dict[str, object] = {
+    "startup_idea_pipeline": report_renderer.render_startup_synthesis_report,
+    "side_hustle_pipeline": report_renderer.render_side_hustle_synthesis_report,
+    "freelance_scanner": report_renderer.render_side_hustle_synthesis_report,
+}
+
+# Round 5.B3: email subject line per pipeline. Side hustle users
+# getting "Pick an idea to build" would be confusing — the subject
+# should match the pipeline's output ("Pick a side hustle to
+# automate"). Same fallback strategy as the renderer dict.
+_SUBJECT_BY_TEMPLATE: dict[str, str] = {
+    "startup_idea_pipeline": "Pick an idea to build",
+    "side_hustle_pipeline": "Pick a side hustle to automate",
+    "freelance_scanner": "Pick a scanner to deploy",
+}
+
+
 async def notify(
     session: AsyncSession,
     workflow_id: uuid.UUID,
@@ -124,7 +148,25 @@ async def _send_approval_email(session: AsyncSession, workflow_id: uuid.UUID) ->
     # Compute total cost from jobs (mirrors _workflow_to_response logic)
     workflow_cost_usd = await _sum_workflow_cost(session, workflow_id)
 
-    html_body, text_fallback, pdf_bytes = report_renderer.render_synthesis_report(
+    # Round 5.B2/B3: pick the renderer and subject line based on the
+    # workflow's template_id. Unknown templates log a warning and
+    # fall back to the startup renderer for zero-regression.
+    template_id = workflow.template_id or ""
+    renderer = _RENDERER_BY_TEMPLATE.get(
+        template_id, report_renderer.render_startup_synthesis_report
+    )
+    subject_prefix = _SUBJECT_BY_TEMPLATE.get(
+        template_id, "Pick an idea to build"
+    )
+    if template_id and template_id not in _RENDERER_BY_TEMPLATE:
+        logger.warning(
+            "Approval notification: unknown template_id %r for workflow "
+            "%s; falling back to startup renderer. Register the template "
+            "in _RENDERER_BY_TEMPLATE if it has its own synthesis shape.",
+            template_id, workflow_id,
+        )
+
+    html_body, text_fallback, pdf_bytes = renderer(
         synthesis,
         workflow_id,
         approval_links,
@@ -141,7 +183,7 @@ async def _send_approval_email(session: AsyncSession, workflow_id: uuid.UUID) ->
     subject_label = (workflow.name or "workflow").strip()[:60]
     await email_sender.send_email(
         to=settings.approval_recipient_email,
-        subject=f"[arlo] Pick an idea to build — {subject_label}",
+        subject=f"[arlo] {subject_prefix} — {subject_label}",
         html_body=html_body,
         text_fallback=text_fallback,
         attachments=attachments,

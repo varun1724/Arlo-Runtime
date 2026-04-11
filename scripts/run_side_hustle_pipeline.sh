@@ -146,8 +146,28 @@ else:
     print(f'{len(rankings)}')
 " 2>&1 > /tmp/arlo_hustle.txt
 
-    COUNT=$(tail -1 /tmp/arlo_hustle.txt)
-    sed '$d' /tmp/arlo_hustle.txt
+    COUNT=$(tail -1 /tmp/arlo_hustle.txt 2>/dev/null || echo "")
+    sed '$d' /tmp/arlo_hustle.txt 2>/dev/null || true
+
+    # Round 5.A5: guard against the Python heredoc crashing. If that
+    # happens, the file is truncated/empty, COUNT ends up empty or
+    # non-numeric, and the script would otherwise silently show an
+    # approval prompt with no options (or garbage choices). Fail loud
+    # and cancel the approval so the user can debug the synthesis JSON.
+    if [ -z "$COUNT" ] || ! [[ "$COUNT" =~ ^[0-9]+$ ]]; then
+      echo ""
+      echo "ERROR: approval display block failed to produce a ranking count"
+      echo "  (got COUNT='$COUNT')."
+      echo "The synthesis rendering Python heredoc likely crashed — inspect"
+      echo "the workflow's context.synthesis via the API for malformed JSON."
+      echo "Cancelling approval and exiting."
+      curl -s -X POST "$BASE/workflows/$WORKFLOW_ID/approve" \
+        -H "Authorization: Bearer $TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"approved": false}' > /dev/null
+      rm -f /tmp/arlo_hustle.txt
+      exit 1
+    fi
 
     echo "============================================"
     echo ""

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ─────────────────────────────────────────────────────────────────────
 # Step 0: landscape_scan → LandscapeResult
@@ -364,11 +364,35 @@ class SideHustleOpportunity(BaseModel):
     income_range: str = Field(min_length=3)
     tools_needed: list[str] = Field(min_length=1)
     non_obviousness_check: Literal["yes", "no"]
-    # Prompt says only required when non_obviousness_check == "yes";
-    # schema can't express that cleanly without a validator so we accept
-    # either. Tests verify the field exists when required.
+    # The prompt says this field is required only when
+    # ``non_obviousness_check == "yes"`` (to justify including an
+    # otherwise obvious idea). A plain Field declaration can't encode
+    # that conditional requirement, so Round 5.A1 adds a model-level
+    # validator that enforces it after all field validation runs.
     non_obviousness_justification: str | None = None
     automation_realness_check: AutomationRealnessCheck
+
+    @model_validator(mode="after")
+    def _require_justification_when_obvious(self) -> "SideHustleOpportunity":
+        """Round 5.A1: when ``non_obviousness_check == "yes"``, the
+        prompt requires a non-empty ``non_obviousness_justification``
+        explaining why to include an obvious idea (or the idea should
+        be dropped and replaced). Without this validator the schema
+        silently accepted a ``check="yes"`` opportunity with
+        ``justification=None``, letting unjustified obvious ideas
+        slip through into downstream steps.
+        """
+        if self.non_obviousness_check == "yes":
+            justification = self.non_obviousness_justification
+            if not justification or not justification.strip():
+                raise ValueError(
+                    "non_obviousness_justification is required when "
+                    "non_obviousness_check is 'yes' — the prompt asks "
+                    "Claude to either justify why to include an "
+                    "obvious idea or drop it and replace with "
+                    "something fresher."
+                )
+        return self
 
 
 class SideHustleResearchResult(BaseModel):
@@ -544,9 +568,14 @@ class SideHustleContrarianAnalysis(BaseModel):
 class SideHustleContrarianResult(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    # Same rationale as feasibility — need enough survivors for
-    # synthesis to make a meaningful ranking.
-    analyses: list[SideHustleContrarianAnalysis] = Field(min_length=5)
+    # Round 5.A2: lowered from 5 to 3. The contrarian prompt instructs
+    # Claude to "kill at least 30%" of incoming opportunities, and
+    # feasibility itself has min_length=5. A run where feasibility
+    # outputs exactly 5 evaluations and contrarian kills 2 leaves 3
+    # survivors — which previously failed schema validation and
+    # triggered pointless retries. Matches the startup pipeline's
+    # ContrarianResult min_length=3.
+    analyses: list[SideHustleContrarianAnalysis] = Field(min_length=3)
     summary: str = Field(min_length=30)
 
 

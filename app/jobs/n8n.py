@@ -49,10 +49,48 @@ from app.tools.n8n import (
     N8nAPIError,
     N8nClient,
     N8nTimeoutError,
+    N8nUnknownStatusError,
     _normalize_execution_status,
 )
 
 logger = logging.getLogger("arlo.jobs.n8n")
+
+
+# Round 5.A3: knobs for the "wait for the execution row to appear"
+# loop after trigger_webhook returns 2xx. n8n's default webhook
+# responseMode is "onReceived", which queues the execution and
+# returns immediately — so we have to poll list_executions to find
+# the newly created row before polling it to terminal status.
+# The original Round 4 values (3 retries × 1s = ~3s total) were
+# too tight for an n8n instance under load; silently reported
+# "success" based on webhook 2xx alone. Doubled to 6 retries so the
+# loop gives n8n ~6s to persist the row before giving up.
+_POLL_EXECUTION_ROW_RETRIES = 6
+_POLL_EXECUTION_ROW_DELAY = 1.0
+
+
+def _sanitize_for_json(obj):
+    """Round 5.A4: defensive pass to coerce any non-JSON-serializable
+    values to str so the finalize step never crashes on exotic webhook
+    responses.
+
+    Walks dicts and lists, leaves primitives alone, stringifies unknown
+    types. Prevents ``json.dumps(result)`` from raising TypeError when
+    a webhook response contains values like ``datetime``, ``Decimal``,
+    ``bytes``, or custom objects that slipped through httpx's ``.json()``
+    parser.
+
+    This is called only from the fallback path of the finalize step —
+    if the initial ``json.dumps(result)`` succeeds, we never walk the
+    result dict. That keeps the happy path cheap.
+    """
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    return str(obj)
 
 
 def _extract_execution_status(execution: dict) -> str:
@@ -220,29 +258,43 @@ async def execute_n8n_job(session: AsyncSession, job: JobRow) -> None:
                 result["execution_status"] = "error"
             elif n8n_workflow_id:
                 # Look up the newly created execution row and poll it
-                # to completion. Give n8n a moment to persist the row.
-                await asyncio.sleep(1)
+                # to completion. Round 5.A3: bumped from 3 retries
+                # to _POLL_EXECUTION_ROW_RETRIES with better logging
+                # and a new `execution_verification` audit field.
+                await asyncio.sleep(_POLL_EXECUTION_ROW_DELAY)
                 execution = None
-                for _ in range(3):
+                for attempt in range(_POLL_EXECUTION_ROW_RETRIES):
                     execution = await client.get_latest_execution_for_workflow(
                         n8n_workflow_id
                     )
                     if execution:
                         break
-                    await asyncio.sleep(1)
+                    logger.debug(
+                        "n8n job %s: execution row not yet visible for "
+                        "workflow %s (attempt %d/%d)",
+                        job.id, n8n_workflow_id,
+                        attempt + 1, _POLL_EXECUTION_ROW_RETRIES,
+                    )
+                    await asyncio.sleep(_POLL_EXECUTION_ROW_DELAY)
 
                 if execution is None:
+                    total_wait = (
+                        _POLL_EXECUTION_ROW_RETRIES * _POLL_EXECUTION_ROW_DELAY
+                    )
                     logger.warning(
                         "n8n job %s: webhook accepted but no execution row "
-                        "found for workflow %s within 3s — reporting success "
-                        "based on webhook 2xx alone",
-                        job.id, n8n_workflow_id,
+                        "found for workflow %s within %.0fs — falling back "
+                        "to webhook-2xx-only success. The actual execution "
+                        "result was NOT verified.",
+                        job.id, n8n_workflow_id, total_wait,
                     )
                     result["execution_status"] = "success"
+                    result["execution_verification"] = "webhook_2xx_only"
                 else:
                     exec_id = execution.get("id")
                     if exec_id is None:
                         result["execution_status"] = "success"
+                        result["execution_verification"] = "webhook_2xx_only"
                     else:
                         # Live progress: throttled 5s updates during the poll.
                         progress_state = {
@@ -280,14 +332,33 @@ async def execute_n8n_job(session: AsyncSession, job: JobRow) -> None:
                             result["execution"] = terminal
                             normalized = _extract_execution_status(terminal)
                             result["execution_status"] = normalized
+                            # Round 5.A3: audit field distinguishes a
+                            # verified-via-polling success from the
+                            # webhook-2xx-only fallback case.
+                            result["execution_verification"] = "execution_polled"
                         except N8nTimeoutError as e:
                             # Execution exceeded the poll timeout. Record
                             # the state and treat as an error so the
                             # workflow's auto-retry can kick in.
                             result["execution_id"] = str(exec_id)
                             result["execution_status"] = "error"
+                            result["execution_verification"] = "poll_timeout"
                             logger.warning(
                                 "n8n job %s: execution %s poll timed out: %s",
+                                job.id, exec_id, e,
+                            )
+                        except N8nUnknownStatusError as e:
+                            # Round 5.A6: n8n returned an unrecognized
+                            # status repeatedly. Surface as an error so
+                            # auto-retry fires AND log a clear diagnostic
+                            # so the operator knows to update the
+                            # _normalize_execution_status helper.
+                            result["execution_id"] = str(exec_id)
+                            result["execution_status"] = "error"
+                            result["execution_verification"] = "unknown_status"
+                            logger.error(
+                                "n8n job %s: execution %s returned "
+                                "unrecognized status: %s",
                                 job.id, exec_id, e,
                             )
             else:
@@ -296,7 +367,20 @@ async def execute_n8n_job(session: AsyncSession, job: JobRow) -> None:
                 result["execution_status"] = "success"
 
         # ─── Finalize ───
-        result_json = json.dumps(result)
+        # Round 5.A4: wrap json.dumps in try/except TypeError so a
+        # webhook response containing exotic types (datetime, Decimal,
+        # bytes, custom objects) doesn't crash the executor. The
+        # happy path skips the sanitizer entirely; the fallback walks
+        # the result dict and str()-ifies anything non-primitive.
+        try:
+            result_json = json.dumps(result)
+        except TypeError as e:
+            logger.warning(
+                "n8n job %s: result contained non-serializable "
+                "values, coercing to str: %s",
+                job.id, e,
+            )
+            result_json = json.dumps(_sanitize_for_json(result))
         preview = _build_preview(result)
 
         # If the execute phase ran and returned a non-2xx, fail the job
