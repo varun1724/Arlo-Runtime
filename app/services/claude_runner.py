@@ -161,7 +161,14 @@ async def run_claude(
     if timeout is None:
         timeout = settings.research_timeout_seconds
 
-    cmd = [settings.claude_command, "-p", prompt, "--output-format", output_format]
+    # Round 5.6 hotfix: do NOT pass the prompt as a command-line argument.
+    # The Linux kernel's MAX_ARG_STRLEN is 128 KB per argument, and
+    # deep_research_mode synthesis prompts routinely hit ~200 KB (landscape +
+    # deep_dive + contrarian stacked). execve() returns [Errno 7] Argument
+    # list too long before the Claude process even starts. Instead we pipe
+    # the prompt via stdin — `claude -p` reads from stdin when no prompt
+    # argument is given. stdin is streamed, so there is no size cap.
+    cmd = [settings.claude_command, "-p", "--output-format", output_format]
 
     # stream-json requires --verbose to actually emit events
     if output_format == "stream-json":
@@ -176,32 +183,41 @@ async def run_claude(
         cmd.extend(["--model", effective_model])
 
     logger.info(
-        "Running Claude Code CLI (format=%s, timeout=%ds, cwd=%s)",
-        output_format, timeout, cwd or "(default)",
+        "Running Claude Code CLI (format=%s, timeout=%ds, cwd=%s, prompt_chars=%d)",
+        output_format, timeout, cwd or "(default)", len(prompt),
     )
     logger.debug("Command: %s", " ".join(cmd[:4]) + " ...")
 
     if output_format == "stream-json":
-        return await _run_claude_streaming(cmd, cwd=cwd, timeout=timeout, on_progress=on_progress)
-    return await _run_claude_buffered(cmd, cwd=cwd, timeout=timeout)
+        return await _run_claude_streaming(
+            cmd, prompt=prompt, cwd=cwd, timeout=timeout, on_progress=on_progress
+        )
+    return await _run_claude_buffered(cmd, prompt=prompt, cwd=cwd, timeout=timeout)
 
 
 async def _run_claude_buffered(
     cmd: list[str],
     *,
+    prompt: str,
     cwd: str | None,
     timeout: int,
 ) -> dict:
-    """Legacy single-blob path. Used when output_format != 'stream-json'."""
+    """Legacy single-blob path. Used when output_format != 'stream-json'.
+
+    Round 5.6: prompt comes via stdin, not argv. communicate(input=...)
+    handles the write + close-stdin + read-stdout/stderr dance atomically.
+    """
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
         )
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            process.communicate(), timeout=timeout
+            process.communicate(input=prompt.encode("utf-8")),
+            timeout=timeout,
         )
     except asyncio.TimeoutError:
         try:
@@ -246,6 +262,7 @@ async def _run_claude_buffered(
 async def _run_claude_streaming(
     cmd: list[str],
     *,
+    prompt: str,
     cwd: str | None,
     timeout: int,
     on_progress: ProgressCallback | None,
@@ -255,16 +272,33 @@ async def _run_claude_streaming(
 
     Returns the same dict shape as ``_run_claude_buffered`` so callers
     don't need to know which path was used.
+
+    Round 5.6: prompt is written to stdin (not argv) to sidestep the
+    kernel's 128KB per-arg MAX_ARG_STRLEN limit. We write the entire
+    prompt and close stdin BEFORE entering the stdout read loop so
+    Claude sees EOF and starts generating.
     """
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
         )
     except (OSError, FileNotFoundError) as e:
         raise ClaudeRunError(f"Failed to start Claude CLI: {e}") from e
+
+    # Round 5.6: write the prompt to stdin and close it so Claude knows
+    # the input is complete. Large prompts may require multiple underlying
+    # pipe writes — drain() ensures they all land before we proceed.
+    try:
+        process.stdin.write(prompt.encode("utf-8"))
+        await process.stdin.drain()
+        process.stdin.close()
+    except Exception as e:
+        _kill_process(process)
+        raise ClaudeRunError(f"Failed to write prompt to Claude CLI stdin: {e}") from e
 
     accumulated_text_parts: list[str] = []
     latest_usage: dict[str, Any] | None = None

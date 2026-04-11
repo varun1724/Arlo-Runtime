@@ -61,8 +61,28 @@ class _FakeStreamReader:
         return await self.read()
 
 
+class _FakeStreamWriter:
+    """Mimics asyncio.StreamWriter for stdin — just records what was
+    written so tests can assert the prompt made it through."""
+
+    def __init__(self):
+        self.written = bytearray()
+        self.closed = False
+
+    def write(self, data: bytes) -> None:
+        self.written.extend(data)
+
+    async def drain(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _FakeProcess:
-    """Mimics asyncio.subprocess.Process: stdout/stderr readers + wait()/kill()."""
+    """Mimics asyncio.subprocess.Process: stdin writer + stdout/stderr
+    readers + wait()/kill(). Round 5.6: added stdin writer because the
+    runner now pipes the prompt via stdin instead of argv."""
 
     def __init__(
         self,
@@ -70,6 +90,7 @@ class _FakeProcess:
         returncode: int = 0,
         delay_per_line: float = 0.0,
     ):
+        self.stdin = _FakeStreamWriter()
         self.stdout = _FakeStreamReader(stdout_lines, delay_per_line)
         self.stderr = _FakeStreamReader([])
         self.returncode = returncode
@@ -127,7 +148,8 @@ async def test_streaming_assembles_full_result():
 
     with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
         result = await _run_claude_streaming(
-            ["claude", "-p", "test"],
+            ["claude", "-p"],
+            prompt="test",
             cwd=None,
             timeout=10,
             on_progress=None,
@@ -148,7 +170,7 @@ async def test_streaming_returns_same_shape_as_buffered():
 
     with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
         result = await _run_claude_streaming(
-            ["claude"], cwd=None, timeout=5, on_progress=None,
+            ["claude"], prompt="x", cwd=None, timeout=5, on_progress=None,
         )
 
     assert set(result.keys()) >= {"result", "usage", "model"}
@@ -176,7 +198,7 @@ async def test_streaming_calls_on_progress_per_event():
 
     with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
         await _run_claude_streaming(
-            ["claude"], cwd=None, timeout=5, on_progress=progress_cb,
+            ["claude"], prompt="x", cwd=None, timeout=5, on_progress=progress_cb,
         )
 
     # 1 system init + 3 assistant + 1 result = 5 events total
@@ -204,7 +226,7 @@ async def test_streaming_progress_callback_exception_does_not_crash():
 
     with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
         result = await _run_claude_streaming(
-            ["claude"], cwd=None, timeout=5, on_progress=bad_cb,
+            ["claude"], prompt="x", cwd=None, timeout=5, on_progress=bad_cb,
         )
 
     # The run still completes successfully despite the callback exploding
@@ -233,7 +255,7 @@ async def test_streaming_handles_malformed_json_lines():
 
     with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
         result = await _run_claude_streaming(
-            ["claude"], cwd=None, timeout=5, on_progress=None,
+            ["claude"], prompt="x", cwd=None, timeout=5, on_progress=None,
         )
 
     assert result["result"] == "good chunk"
@@ -253,7 +275,7 @@ async def test_streaming_handles_empty_lines():
 
     with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
         result = await _run_claude_streaming(
-            ["claude"], cwd=None, timeout=5, on_progress=None,
+            ["claude"], prompt="x", cwd=None, timeout=5, on_progress=None,
         )
 
     assert result["result"] == "x"
@@ -269,7 +291,7 @@ async def test_streaming_nonzero_exit_raises_runerror():
     with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
         with pytest.raises(ClaudeRunError) as exc:
             await _run_claude_streaming(
-                ["claude"], cwd=None, timeout=5, on_progress=None,
+                ["claude"], prompt="x", cwd=None, timeout=5, on_progress=None,
             )
         assert "exited with code 1" in str(exc.value)
 
@@ -290,7 +312,7 @@ async def test_streaming_respects_timeout_on_slow_lines():
     with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
         with pytest.raises(ClaudeTimeoutError):
             await _run_claude_streaming(
-                ["claude"], cwd=None, timeout=1, on_progress=None,
+                ["claude"], prompt="x", cwd=None, timeout=1, on_progress=None,
             )
 
 
@@ -324,7 +346,7 @@ async def test_streaming_tool_use_event_populates_tool_activity():
 
     with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
         await _run_claude_streaming(
-            ["claude"], cwd=None, timeout=5, on_progress=progress_cb,
+            ["claude"], prompt="x", cwd=None, timeout=5, on_progress=progress_cb,
         )
 
     # After the tool_use event, the snapshot should report the activity
@@ -358,7 +380,7 @@ async def test_streaming_tool_result_clears_tool_activity():
 
     with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
         await _run_claude_streaming(
-            ["claude"], cwd=None, timeout=5, on_progress=progress_cb,
+            ["claude"], prompt="x", cwd=None, timeout=5, on_progress=progress_cb,
         )
 
     # The last snapshot (after assistant text following tool_result) should have None
@@ -398,9 +420,60 @@ async def test_streaming_handles_event_larger_than_64kb():
 
     with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
         result = await _run_claude_streaming(
-            ["claude"], cwd=None, timeout=10, on_progress=None,
+            ["claude"], prompt="x", cwd=None, timeout=10, on_progress=None,
         )
 
     # Full payload survives
     assert len(result["result"]) == 100 * 1024
     assert result["result"] == big_text
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 5.6 hotfix: prompt goes via stdin, not argv (MAX_ARG_STRLEN)
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_streaming_writes_prompt_to_stdin():
+    """Real production failure: a 197KB synthesis prompt hit Linux's
+    MAX_ARG_STRLEN (128KB per argv element) when passed via ``-p``.
+    The fix writes the prompt to stdin. This test asserts the full
+    prompt text lands in the fake process's stdin buffer and that
+    stdin is closed afterwards so Claude sees EOF."""
+    big_prompt = "P" * (200 * 1024)  # 200KB, over the old argv cap
+    fake = _FakeProcess(_make_event_script(
+        ["ok"], usage={"input_tokens": 1, "output_tokens": 1},
+    ))
+
+    async def fake_create(*args, **kwargs):
+        # Verify the kwargs include stdin=PIPE so asyncio sets up the
+        # stdin pipe. (Can't inspect without the patch seeing it.)
+        return fake
+
+    with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
+        await _run_claude_streaming(
+            ["claude"], prompt=big_prompt, cwd=None, timeout=10, on_progress=None,
+        )
+
+    assert bytes(fake.stdin.written).decode("utf-8") == big_prompt
+    assert fake.stdin.closed, "stdin must be closed so Claude sees EOF"
+
+
+@pytest.mark.asyncio
+async def test_streaming_prompt_is_utf8_encoded():
+    """Non-ASCII characters in the prompt (quotes, em-dashes, unicode
+    in user-supplied constraints) must survive stdin encoding."""
+    unicode_prompt = "Test with em-dash — and curly \u201cquotes\u201d and emoji \U0001F680"
+    fake = _FakeProcess(_make_event_script(
+        ["ok"], usage={"input_tokens": 1, "output_tokens": 1},
+    ))
+
+    async def fake_create(*args, **kwargs):
+        return fake
+
+    with patch("app.services.claude_runner.asyncio.create_subprocess_exec", side_effect=fake_create):
+        await _run_claude_streaming(
+            ["claude"], prompt=unicode_prompt, cwd=None, timeout=10, on_progress=None,
+        )
+
+    assert bytes(fake.stdin.written).decode("utf-8") == unicode_prompt
