@@ -146,7 +146,16 @@ async def test_notify_awaiting_approval_includes_cost_when_available():
 async def test_notify_build_complete_includes_download_link():
     wf_id = uuid.uuid4()
     selected = {"rank": 2, "name": "AI test suite generator"}
-    row = _fake_workflow_row(wf_id, context={"selected_idea": selected})
+    # Round 6.A1: explicit template_id so the dispatch picks the
+    # startup pipeline's "MVP ready" subject. Fake workflows that
+    # leave template_id=None now route to the generic "Build ready"
+    # fallback (intentional — every real production workflow is
+    # created from a template and always has a template_id set).
+    row = _fake_workflow_row(
+        wf_id,
+        context={"selected_idea": selected},
+        template_id="startup_idea_pipeline",
+    )
     session = _fake_session(row, cost_total=0.5)
 
     with patch.object(notifications.settings, "approval_recipient_email", "me@example.com"):
