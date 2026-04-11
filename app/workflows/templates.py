@@ -25,6 +25,11 @@ def _apply_deep_research_mode(
       means more named-failure / incumbent-threat searches per run.
       45 minutes gives Claude room without the timeout becoming an
       infinite license to spin.
+    - ``deep_dive.timeout_override`` is bumped from 1800s to 2700s.
+      Round 5.6: second real deep-mode run hit the 30-min wall in
+      deep_dive step 1 of 3 retries. 10 opportunities × per-opportunity
+      web searches for competitors, market sizing, demand evidence,
+      and unit economics takes longer than we originally budgeted.
     - ``landscape_scan.timeout_override`` is bumped from 900s to 1800s
       so the deeper landscape scan has room to breathe.
     - ``synthesis_and_ranking.timeout_override`` is bumped from 1200s
@@ -41,6 +46,8 @@ def _apply_deep_research_mode(
             step["timeout_override"] = 2700  # was 1800; 45 min for deep mode
         elif name == "landscape_scan":
             step["timeout_override"] = 1800  # was 900
+        elif name == "deep_dive":
+            step["timeout_override"] = 2700  # was 1800; 45 min for deep mode
         elif name == "synthesis_and_ranking":
             step["timeout_override"] = 1800  # was 1200; more opps to rank
     new_context = {**initial_context, "deep_mode": "true"}

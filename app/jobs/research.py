@@ -413,7 +413,13 @@ def _extract_result(
         cleaned = _extract_json_payload(content)
 
         try:
-            content = json.loads(cleaned)
+            # Round 5.6: strict=False allows unescaped control characters
+            # (literal \n, \t, etc.) inside string values. Claude regularly
+            # writes multi-line descriptions as actual newlines instead of
+            # \\n escape sequences, which strict JSON rejects. Production
+            # failure was "Invalid control character at line 155 column
+            # 109 (char 20794)" in a deep_dive opportunity's description.
+            content = json.loads(cleaned, strict=False)
         except json.JSONDecodeError as e:
             if raw_mode and schema_cls is not None:
                 # Strict mode: JSON parse failure is a hard error

@@ -35,6 +35,14 @@ def test_apply_bumps_contrarian_timeout():
     assert contrarian["timeout_override"] == 2700
 
 
+def test_apply_bumps_deep_dive_timeout():
+    """Round 5.6: deep mode bumps deep_dive timeout from 1800s to 2700s.
+    Second real deep-mode run hit the old 30-min wall in deep_dive."""
+    steps, _ = _apply_deep_research_mode(STARTUP_IDEA_PIPELINE["steps"], {})
+    deep_dive = next(s for s in steps if s["name"] == "deep_dive")
+    assert deep_dive["timeout_override"] == 2700
+
+
 def test_apply_bumps_synthesis_timeout():
     """Round 5.5: deep mode bumps synthesis timeout from 1200s to 1800s
     because there are more opportunities to rank."""

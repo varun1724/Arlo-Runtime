@@ -513,3 +513,35 @@ def test_extract_json_payload_applies_sanitization():
     raw = 'preamble {"a": 1, "b": [2, 3,],}'
     extracted = _extract_json_payload(raw)
     assert _json.loads(extracted) == {"a": 1, "b": [2, 3]}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 5.6: json.loads(strict=False) — allow raw control characters
+# inside string values
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_extract_result_accepts_unescaped_newline_in_string_value():
+    """Real production failure: Claude wrote a multi-line description as
+    a raw newline inside a JSON string value. Strict json.loads rejects
+    this with 'Invalid control character at...'. We use strict=False
+    to accept Claude's output style."""
+    from app.jobs.research import _extract_result
+
+    raw = '{"description": "first line\nsecond line", "n": 1}'
+    claude_output = {"result": raw}
+    result_json, _ = _extract_result(claude_output, raw_mode=True, schema_cls=None)
+    import json as _json
+    parsed = _json.loads(result_json)
+    assert parsed["description"] == "first line\nsecond line"
+
+
+def test_extract_result_accepts_unescaped_tab_in_string_value():
+    from app.jobs.research import _extract_result
+
+    raw = '{"code": "def foo():\n\treturn 42"}'
+    claude_output = {"result": raw}
+    result_json, _ = _extract_result(claude_output, raw_mode=True, schema_cls=None)
+    import json as _json
+    parsed = _json.loads(result_json)
+    assert "\t" in parsed["code"]
