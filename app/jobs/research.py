@@ -228,6 +228,120 @@ def _sanitize_json_payload(payload: str) -> str:
     return payload
 
 
+# Round 6 followup: continuation markers that signal Claude split
+# its output across multiple JSON documents.
+_CONTINUATION_MARKERS = (
+    "```json",
+    "```JSON",
+    "Continuing from the cut",
+    "Outputting evaluations",
+    '"evaluations_continued"',
+    '"evaluations_batch',
+)
+
+
+def _repair_truncated_json(text: str, json_start: int) -> str | None:
+    """Attempt to salvage a truncated JSON document.
+
+    When Claude hits its per-response output token limit, it sometimes
+    writes prose + a second JSON document after the first one gets cut
+    off mid-string. This function:
+
+    1. Finds the earliest continuation marker after ``json_start``.
+    2. Walks backwards from there to find the last ``}`` or ``]`` that
+       could be a valid element closure.
+    3. Closes all open brackets (``[``, ``{``) to produce a structurally
+       complete JSON document.
+    4. Returns the repaired string, or None if no continuation marker
+       was found (i.e. this isn't a continuation-split failure).
+
+    The repaired JSON may contain fewer array elements than expected
+    (e.g. 4 of 8 evaluations) but it will parse. The schema's
+    ``min_length`` on the evaluations list will catch cases where too
+    few survived — but partial data is strictly better than no data
+    after 3 retries.
+    """
+    # Find the earliest continuation marker
+    cut_pos = None
+    for marker in _CONTINUATION_MARKERS:
+        idx = text.find(marker, json_start + 1)
+        if idx != -1 and (cut_pos is None or idx < cut_pos):
+            cut_pos = idx
+
+    if cut_pos is None:
+        return None  # Not a continuation-split failure
+
+    logger.info(
+        "Detected Claude output continuation at char %d of %d — "
+        "attempting JSON repair on the first %d chars",
+        cut_pos, len(text), cut_pos - json_start,
+    )
+
+    # Take everything from json_start up to the continuation marker.
+    fragment = text[json_start:cut_pos]
+
+    # Strategy: walk backwards through the fragment to find the last
+    # COMPLETE array element (a `}` that closes a full object at the
+    # right depth). Cutting at a known-good boundary is more reliable
+    # than trying to repair arbitrary mid-field truncation (dangling
+    # keys, unterminated strings, etc.).
+    #
+    # We scan forward tracking bracket depth, and record the position
+    # of every `}` that reduces depth to exactly 2 (i.e. closes an
+    # element inside the top-level array: outer `{` = depth 1, `[` =
+    # array, inner `{` = depth 2 → `}` brings us back to the array).
+    # Then we cut after the last such position.
+    last_complete_element_end = None
+    depth = 0
+    in_string = False
+    escape = False
+    for i, ch in enumerate(fragment):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in ("{", "["):
+            depth += 1
+        elif ch in ("}", "]"):
+            depth -= 1
+            # depth 2 = just closed an element inside the top-level
+            # array. The nesting is: outer `{` (depth 1) → array `[`
+            # (depth 2) → element `{` (depth 3) → `}` brings us back
+            # to depth 2. This is the ideal cut point.
+            if depth == 2 and ch == "}":
+                last_complete_element_end = i + 1
+
+    if last_complete_element_end is None:
+        # No complete element found — can't salvage anything
+        return None
+
+    # Cut right after the last complete element, close the array + object
+    repaired = fragment[:last_complete_element_end] + "]}"
+
+    # Quick sanity check: does it parse?
+    try:
+        json.loads(repaired, strict=False)
+        logger.info(
+            "JSON repair succeeded — salvaged %d chars from a %d-char "
+            "output (%.0f%% of original)",
+            len(repaired), len(text), len(repaired) / len(text) * 100,
+        )
+        return repaired
+    except json.JSONDecodeError:
+        logger.warning(
+            "JSON repair failed — the salvaged fragment is still not valid JSON. "
+            "Falling back to the unrepaired payload."
+        )
+        return None
+
+
 def _extract_json_payload(content: str) -> str:
     """Pull a JSON object out of Claude's response, ignoring preamble text.
 
@@ -277,6 +391,21 @@ def _extract_json_payload(content: str) -> str:
                 depth -= 1
                 if depth == 0:
                     return _sanitize_json_payload(cleaned[start:i + 1])
+
+    # 2b. Round 6 followup: the balanced brace walker failed to find
+    # depth==0, which means the first JSON object is incomplete. The
+    # most common cause: Claude hit its per-response output token
+    # limit and attempted a "continuation" — writing prose like
+    # "Continuing from the cut. Outputting evaluations 2-6:" followed
+    # by a second JSON document (```json{"evaluations_continued":...}).
+    # Detect this pattern: truncate at the continuation marker, close
+    # all open brackets, and return whatever we salvaged. Even a
+    # partial result (e.g. 4 of 8 evaluations) is better than failing
+    # 3 times and losing all work.
+    if start != -1:
+        repaired = _repair_truncated_json(cleaned, start)
+        if repaired is not None:
+            return _sanitize_json_payload(repaired)
 
     # 3. Last resort: return what we have. Will fail JSON parsing
     # with a clear error and trigger the auto-retry path.

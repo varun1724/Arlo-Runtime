@@ -398,11 +398,10 @@ class SideHustleOpportunity(BaseModel):
 class SideHustleResearchResult(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    # Round 1 prompt asks for 10-12 opportunities. min_length=8 leaves
-    # slack for Claude rounding down while still catching a silent
-    # empty-array failure. Can be tuned down to 5 in a hotfix if
-    # production runs show 8 is too strict.
-    opportunities: list[SideHustleOpportunity] = Field(min_length=8)
+    # Prompt asks for 6-8 opportunities (8-10 in deep mode). min_length=5
+    # leaves slack for Claude rounding down while still catching a
+    # silent empty-array failure.
+    opportunities: list[SideHustleOpportunity] = Field(min_length=5)
     sources_consulted: list[str] = Field(min_length=3)
 
 
