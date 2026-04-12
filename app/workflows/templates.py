@@ -540,7 +540,7 @@ STARTUP_IDEA_PIPELINE = {
             ),
             "output_key": "mvp_result",
             "condition": {"field": "synthesis", "operator": "not_empty"},
-            "timeout_override": 1200,
+            "timeout_override": 2400,
             "max_retries": 1,
             "context_inputs": ["selected_idea"],
         },
@@ -1105,7 +1105,8 @@ SIDE_HUSTLE_PIPELINE = {
             ),
             "output_key": "build_result",
             "condition": {"field": "synthesis", "operator": "not_empty"},
-            "timeout_override": 1200,
+            "timeout_override": 2400,
+            "max_retries": 1,
             "context_inputs": ["selected_hustle"],
             "required_artifacts": [
                 "workflow.json",
@@ -1391,7 +1392,8 @@ FREELANCE_SCANNER_PIPELINE = {
             ),
             "output_key": "build_result",
             "condition": {"field": "synthesis", "operator": "not_empty"},
-            "timeout_override": 1200,
+            "timeout_override": 2400,
+            "max_retries": 1,
         },
         # ──────────────────────────────────────────────────
         # Step 6: Deploy to n8n
