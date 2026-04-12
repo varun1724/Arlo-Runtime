@@ -487,11 +487,12 @@ class SideHustleEvaluation(BaseModel):
 class SideHustleFeasibilityResult(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    # Research produces 10-12 opportunities with min_length=8, but some
-    # may be dropped in feasibility (e.g. automation_realness_check was
-    # fake_automation but snuck through). Set min_length=5 so the
+    # Research produces 10-12 opportunities, but evaluate_feasibility
+    # caps at the top 8 to stay within Claude's per-response output
+    # budget. Some of those 8 may be dropped (automation_realness_check
+    # was fake_automation but snuck through). Set min_length=3 so the
     # contrarian step has enough to work with.
-    evaluations: list[SideHustleEvaluation] = Field(min_length=5)
+    evaluations: list[SideHustleEvaluation] = Field(min_length=3)
 
 
 # ─────────────────────────────────────────────────────────────────────
