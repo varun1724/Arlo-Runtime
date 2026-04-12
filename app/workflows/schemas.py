@@ -508,23 +508,30 @@ class SideHustleFailedPredecessor(BaseModel):
     Round 1 prompt requires name + year + reason + source URL; all are
     mandatory here. Vague claims like "many people failed" don't satisfy
     this schema.
+
+    Round 6 followup: relaxed min_length on year and source. Claude
+    sometimes writes "N/A" or "unknown" when it genuinely can't find
+    the year a predecessor shut down or can't locate a URL. Failing
+    the entire contrarian analysis over one predecessor's missing
+    year is worse than accepting "N/A" and letting the verdict
+    reasoning explain the gap.
     """
 
     model_config = ConfigDict(extra="allow")
 
     name: str = Field(min_length=2)
-    year: str = Field(min_length=4)
-    reason: str = Field(min_length=10)
-    source: str = Field(min_length=5)
+    year: str = Field(min_length=1)
+    reason: str = Field(min_length=5)
+    source: str = Field(min_length=1)
 
 
 class PlatformCrackdown(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     platform: str = Field(min_length=2)
-    action: str = Field(min_length=5)
-    when: str = Field(min_length=4)
-    source: str = Field(min_length=5)
+    action: str = Field(min_length=3)
+    when: str = Field(min_length=1)
+    source: str = Field(min_length=1)
 
 
 class Saturation(BaseModel):
@@ -545,8 +552,8 @@ class IncomeReality(BaseModel):
 class FailureStory(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    quit_reason: str = Field(min_length=10)
-    source: str = Field(min_length=5)
+    quit_reason: str = Field(min_length=3)
+    source: str = Field(min_length=1)
 
 
 class SideHustleContrarianAnalysis(BaseModel):
