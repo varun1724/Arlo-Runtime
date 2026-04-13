@@ -814,3 +814,151 @@ async def test_finalize_falls_back_when_sanitizer_itself_raises():
         payload = json.loads(updated.result_data)
         assert payload.get("_sanitizer_failed") is True
         assert "simulated sanitizer crash" in payload.get("_sanitizer_error", "")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 6 followup: activation validation loop (soft-fail + cleanup)
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_activation_failure_stores_error_and_deletes_workflow():
+    """When n8n rejects activation (e.g. 'Node X: missing required
+    parameters'), the executor must:
+    1. Store the error in result_data as activation_error
+    2. Delete the created workflow (cleanup for retry)
+    3. Finalize the job as SUCCEEDED (not failed) so the deploy step's
+       loop_condition can fire and loop back to the build step."""
+    from app.db.engine import async_session
+    from app.db.models import JobRow, WorkflowRow
+    from app.jobs.n8n import execute_n8n_job
+    from app.tools.n8n import N8nAPIError
+
+    wf_id = uuid.uuid4()
+    job_id = uuid.uuid4()
+
+    async with async_session() as session:
+        session.add(WorkflowRow(
+            id=wf_id, name="activation-fail-test",
+            status="running", context="{}",
+            step_definitions="[]", current_step_index=0,
+        ))
+        await session.commit()
+
+    inline_workflow = {
+        "name": "bad-nodes",
+        "nodes": [
+            {"id": "1", "name": "Webhook", "type": "n8n-nodes-base.webhook",
+             "parameters": {"path": "test-slug"}},
+        ],
+        "connections": {},
+    }
+
+    async with async_session() as session:
+        session.add(JobRow(
+            id=job_id, job_type="n8n", status="running",
+            prompt=json.dumps({
+                "action": "create", "activate": True,
+                "workflow_json": inline_workflow,
+            }),
+            workflow_id=wf_id, step_index=0,
+            started_at=datetime.now(timezone.utc),
+        ))
+        await session.commit()
+
+        mock_client = AsyncMock()
+        mock_client.create_workflow = AsyncMock(
+            return_value={"id": "n8n-wf-bad", "name": "bad-nodes"}
+        )
+        mock_client.activate_workflow = AsyncMock(
+            side_effect=N8nAPIError(
+                "n8n POST /api/v1/workflows/n8n-wf-bad/activate returned 400: "
+                "Cannot publish workflow: 2 nodes have configuration issues"
+            )
+        )
+        mock_client.delete_workflow = AsyncMock()
+
+        with _patch_n8n_client(mock_client):
+            from sqlalchemy import select
+            row = await session.execute(select(JobRow).where(JobRow.id == job_id))
+            await execute_n8n_job(session, row.scalars().first())
+
+        row = await session.execute(select(JobRow).where(JobRow.id == job_id))
+        updated = row.scalars().first()
+
+        # Job must succeed (not fail) for the loop mechanism to fire
+        assert updated.status == "succeeded"
+
+        payload = json.loads(updated.result_data)
+        assert payload["activated"] is False
+        assert "activation_error" in payload
+        assert "configuration issues" in payload["activation_error"]
+        assert payload["activation_cleanup"] == "deleted"
+
+    # The bad workflow was deleted for cleanup
+    mock_client.delete_workflow.assert_awaited_once_with("n8n-wf-bad")
+
+
+@pytest.mark.asyncio
+async def test_activation_failure_tolerates_delete_failure():
+    """If the cleanup delete_workflow also fails (e.g. n8n is down),
+    the job must still succeed with activation_cleanup='delete_failed'.
+    The retry loop will handle the duplicate-name conflict on the next
+    build attempt — the operator can also clean up manually."""
+    from app.db.engine import async_session
+    from app.db.models import JobRow, WorkflowRow
+    from app.jobs.n8n import execute_n8n_job
+    from app.tools.n8n import N8nAPIError
+
+    wf_id = uuid.uuid4()
+    job_id = uuid.uuid4()
+
+    async with async_session() as session:
+        session.add(WorkflowRow(
+            id=wf_id, name="delete-fail-test",
+            status="running", context="{}",
+            step_definitions="[]", current_step_index=0,
+        ))
+        await session.commit()
+
+    async with async_session() as session:
+        session.add(JobRow(
+            id=job_id, job_type="n8n", status="running",
+            prompt=json.dumps({
+                "action": "create", "activate": True,
+                "workflow_json": {
+                    "name": "wf", "nodes": [
+                        {"id": "1", "name": "W", "type": "n8n-nodes-base.webhook",
+                         "parameters": {"path": "x"}},
+                    ], "connections": {},
+                },
+            }),
+            workflow_id=wf_id, step_index=0,
+            started_at=datetime.now(timezone.utc),
+        ))
+        await session.commit()
+
+        mock_client = AsyncMock()
+        mock_client.create_workflow = AsyncMock(
+            return_value={"id": "n8n-wf-stuck", "name": "wf"}
+        )
+        mock_client.activate_workflow = AsyncMock(
+            side_effect=N8nAPIError("activation rejected")
+        )
+        mock_client.delete_workflow = AsyncMock(
+            side_effect=N8nAPIError("n8n is down")
+        )
+
+        with _patch_n8n_client(mock_client):
+            from sqlalchemy import select
+            row = await session.execute(select(JobRow).where(JobRow.id == job_id))
+            await execute_n8n_job(session, row.scalars().first())
+
+        row = await session.execute(select(JobRow).where(JobRow.id == job_id))
+        updated = row.scalars().first()
+
+        assert updated.status == "succeeded"
+        payload = json.loads(updated.result_data)
+        assert payload["activated"] is False
+        assert "activation_error" in payload
+        assert payload["activation_cleanup"] == "delete_failed"

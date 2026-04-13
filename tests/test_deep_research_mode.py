@@ -200,3 +200,63 @@ def test_side_hustle_prompts_contain_deep_mode_placeholders():
         assert "DEEP RESEARCH MODE" in step["prompt_template"], (
             f"Round 6.B2: {name} prompt missing DEEP RESEARCH MODE block"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Round 6 followup: n8n activation validation loop template assertions
+# ─────────────────────────────────────────────────────────────────────
+
+
+from app.workflows.templates import FREELANCE_SCANNER_PIPELINE  # noqa: E402
+
+
+def _get_step(pipeline, name):
+    return next(s for s in pipeline["steps"] if s["name"] == name)
+
+
+def test_side_hustle_deploy_has_activation_loop():
+    """deploy_to_n8n must have loop_to pointing at build_n8n_workflow
+    (step index 5) with a 'contains activation_error' condition."""
+    step = _get_step(SIDE_HUSTLE_PIPELINE, "deploy_to_n8n")
+    assert step.get("loop_to") == 5
+    assert step.get("max_loop_count") == 3
+    cond = step.get("loop_condition", {})
+    assert cond.get("field") == "deploy_result"
+    assert cond.get("operator") == "contains"
+    assert cond.get("value") == "activation_error"
+
+
+def test_side_hustle_build_has_deploy_result_in_context_inputs():
+    """build_n8n_workflow must include deploy_result in context_inputs
+    so the activation error from a failed deploy is available in the
+    prompt on a retry iteration."""
+    step = _get_step(SIDE_HUSTLE_PIPELINE, "build_n8n_workflow")
+    assert "deploy_result" in step.get("context_inputs", [])
+    assert "{deploy_result}" in step["prompt_template"]
+
+
+def test_freelance_scanner_deploy_has_activation_loop():
+    """deploy_scanner must have the same activation loop pattern."""
+    step = _get_step(FREELANCE_SCANNER_PIPELINE, "deploy_scanner")
+    assert step.get("loop_to") == 5
+    assert step.get("max_loop_count") == 3
+    cond = step.get("loop_condition", {})
+    assert cond.get("field") == "deploy_result"
+    assert cond.get("operator") == "contains"
+    assert cond.get("value") == "activation_error"
+
+
+def test_freelance_scanner_build_has_deploy_result_in_context():
+    """build_scanner_workflow must include deploy_result for error
+    feedback, same as the side hustle pipeline."""
+    step = _get_step(FREELANCE_SCANNER_PIPELINE, "build_scanner_workflow")
+    assert "deploy_result" in step.get("context_inputs", [])
+    assert "{deploy_result}" in step["prompt_template"]
+
+
+def test_freelance_scanner_deploy_uses_from_previous_build():
+    """deploy_scanner must use from_previous_build (not the old-style
+    {build_result} interpolation that corrupts on quotes/backslashes)."""
+    step = _get_step(FREELANCE_SCANNER_PIPELINE, "deploy_scanner")
+    assert "from_previous_build" in step["prompt_template"]
+    assert "{build_result}" not in step["prompt_template"]

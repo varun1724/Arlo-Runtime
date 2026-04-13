@@ -1091,13 +1091,21 @@ SIDE_HUSTLE_PIPELINE = {
                 "   - a `settings` object (empty {} is acceptable — n8n 2.x REJECTS "
                 "workflow creation without this field with a 400 error)\n"
                 "DO NOT omit the `settings` field. n8n v1 tolerated missing settings; "
-                "v2 does not."
+                "v2 does not.\n\n"
+                "--- ACTIVATION ERRORS FROM PREVIOUS DEPLOY (if any) ---\n"
+                "{deploy_result}\n\n"
+                "If the above contains 'activation_error', you MUST fix the specific node "
+                "configuration issues described in the n8n error. The error names the exact "
+                "nodes and parameters that are misconfigured. Fix ONLY those nodes' parameters "
+                "— do not redesign the workflow topology or change the trigger type.\n"
+                "If deploy_result shows '{{unknown}}' or is empty, ignore this section and "
+                "build fresh."
             ),
             "output_key": "build_result",
             "condition": {"field": "synthesis", "operator": "not_empty"},
             "timeout_override": 2400,
             "max_retries": 1,
-            "context_inputs": ["selected_hustle"],
+            "context_inputs": ["selected_hustle", "deploy_result"],
             "required_artifacts": [
                 "workflow.json",
                 "README.md",
@@ -1123,6 +1131,19 @@ SIDE_HUSTLE_PIPELINE = {
             ),
             "output_key": "deploy_result",
             "condition": {"field": "build_result", "operator": "not_empty"},
+            # Round 6 followup: activation validation loop. If n8n
+            # rejects activation (e.g. "Node X: missing required
+            # parameters"), the executor stores the error in
+            # deploy_result instead of failing the job. This loop
+            # sends the workflow back to build_n8n_workflow (step 5)
+            # so Claude can fix the flagged nodes. Max 3 total builds.
+            "loop_to": 5,
+            "max_loop_count": 3,
+            "loop_condition": {
+                "field": "deploy_result",
+                "operator": "contains",
+                "value": "activation_error",
+            },
         },
         # ──────────────────────────────────────────────────
         # Step 7: Test run (approval-gated)
@@ -1378,12 +1399,19 @@ FREELANCE_SCANNER_PIPELINE = {
                 "   - How to customize keywords and filters\n"
                 "   - Expected results per day\n\n"
                 "4. Create an `arlo_manifest.json` that includes the workflow JSON content.\n\n"
-                "IMPORTANT: Use real n8n node types. The workflow must be importable into n8n."
+                "IMPORTANT: Use real n8n node types. The workflow must be importable into n8n.\n\n"
+                "--- ACTIVATION ERRORS FROM PREVIOUS DEPLOY (if any) ---\n"
+                "{deploy_result}\n\n"
+                "If the above contains 'activation_error', you MUST fix the specific node "
+                "configuration issues described in the n8n error. Fix ONLY those nodes' "
+                "parameters — do not redesign the workflow topology.\n"
+                "If deploy_result shows '{{unknown}}' or is empty, ignore this section."
             ),
             "output_key": "build_result",
             "condition": {"field": "synthesis", "operator": "not_empty"},
             "timeout_override": 2400,
             "max_retries": 1,
+            "context_inputs": ["synthesis", "deploy_result"],
         },
         # ──────────────────────────────────────────────────
         # Step 6: Deploy to n8n
@@ -1391,12 +1419,24 @@ FREELANCE_SCANNER_PIPELINE = {
         {
             "name": "deploy_scanner",
             "job_type": "n8n",
+            # Round 6 followup: fixed from old-style {build_result}
+            # interpolation to the Round 4 from_previous_build pattern.
+            # The old prompt corrupted JSON on any quote/backslash in
+            # the builder output.
             "prompt_template": (
-                '{{"action": "create", "activate": true, "workflow_json_from_build": true, '
-                '"build_result": {build_result}}}'
+                '{"action": "create", "activate": true, "from_previous_build": true}'
             ),
             "output_key": "deploy_result",
             "condition": {"field": "build_result", "operator": "not_empty"},
+            # Round 6 followup: activation validation loop (same
+            # pattern as side hustle deploy_to_n8n).
+            "loop_to": 5,
+            "max_loop_count": 3,
+            "loop_condition": {
+                "field": "deploy_result",
+                "operator": "contains",
+                "value": "activation_error",
+            },
         },
     ],
 }

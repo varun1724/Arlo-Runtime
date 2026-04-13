@@ -231,8 +231,32 @@ async def execute_n8n_job(session: AsyncSession, job: JobRow) -> None:
                 progress_message="Activating n8n workflow",
                 iteration_count=2,
             )
-            await client.activate_workflow(n8n_workflow_id)
-            result["activated"] = True
+            try:
+                await client.activate_workflow(n8n_workflow_id)
+                result["activated"] = True
+            except N8nAPIError as activation_err:
+                # Round 6 followup: soft-fail on activation error.
+                # The deploy step's loop_condition checks for
+                # "activation_error" in the result, and loops back
+                # to the build step so Claude can fix the specific
+                # node configuration issues named in the n8n error.
+                # The job SUCCEEDS (not fails) so the loop mechanism
+                # can fire — loops only work on step success.
+                logger.warning(
+                    "n8n job %s: activation failed; storing error for "
+                    "build-step retry: %s",
+                    job.id, activation_err,
+                )
+                result["activated"] = False
+                result["activation_error"] = str(activation_err)
+                # Clean up: n8n rejects duplicate workflow names, so
+                # the next build attempt would fail on create if this
+                # un-activatable workflow still exists.
+                try:
+                    await client.delete_workflow(n8n_workflow_id)
+                    result["activation_cleanup"] = "deleted"
+                except Exception:
+                    result["activation_cleanup"] = "delete_failed"
 
         # ─── Execute phase ───
         if action in ("execute", "create_and_execute"):
