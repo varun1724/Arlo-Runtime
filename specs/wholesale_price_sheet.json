@@ -1,0 +1,37 @@
+{
+  "rank": 1,
+  "name": "Wholesale Distributor Customer Price Sheet Generator",
+  "one_liner": "Automates per-customer PDF price sheet generation and email distribution for regional wholesale distributors",
+  "monthly_income_estimate": "$400–$1,200/month",
+  "monthly_costs": "PDFmonkey €5–€15/month; n8n VPS $5/month; Airtable free tier; Google Sheets free; Gmail via Google Workspace $12/month; total: ~$22–$32/month",
+  "contrarian_verdict": "survives",
+  "total_score": 53.5,
+  "n8n_workflow_spec": {
+    "trigger_node": "n8n-nodes-base.webhook with path: 'price-sheet-run'",
+    "node_graph": [
+      {"node": "n8n-nodes-base.webhook", "role": "Receives POST from operator or external cron when master price list is updated; payload carries optional run_date and client_filter parameters"},
+      {"node": "n8n-nodes-base.googleSheets", "role": "Reads master price list sheet (columns: item_id, description, unit, cost, category) from operator-managed Google Sheet"},
+      {"node": "n8n-nodes-base.airtable", "role": "Reads customer account table (columns: account_name, tier_multiplier, primary_contact_email, logo_url, active flag) filtered to active=true"},
+      {"node": "n8n-nodes-base.splitInBatches", "role": "Iterates one customer account at a time to prevent PDFmonkey rate-limit collisions; batch size 1"},
+      {"node": "n8n-nodes-base.code", "role": "Applies each account's tier_multiplier to every line item from the master sheet; formats result as JSON payload matching the per-client PDFmonkey Handlebars template schema (logo_url, account_name, effective_date, line_items array)"},
+      {"node": "n8n-nodes-base.httpRequest", "role": "POSTs JSON payload to PDFmonkey API /v1/documents with the pre-configured per-client template_id; polls returned document URL until status=done"},
+      {"node": "n8n-nodes-base.gmail", "role": "Emails rendered PDF as attachment to account primary_contact_email with subject 'Your [Distributor Name] Price Sheet — Effective [date]'"},
+      {"node": "n8n-nodes-base.airtable", "role": "Logs send record: account_id, send_timestamp, pdf_url, version_hash for audit trail and idempotency on re-runs"}
+    ],
+    "external_credentials": [
+      "Google Sheets OAuth2 (connected to master price list spreadsheet)",
+      "Airtable API key (customer account database base)",
+      "PDFmonkey API key (account with pre-built Handlebars template per distributor client)",
+      "Gmail OAuth2 via Google Workspace account (outbound price sheet distribution)"
+    ],
+    "expected_runtime": "45–90 seconds for a 50-account batch (sequential PDF generation + email dispatch at ~1–1.5 seconds per account)",
+    "frequency": "On demand via webhook; production target is weekly Monday 6 AM triggered by free external cron (cron-job.org) hitting the webhook URL",
+    "out_of_scope": [
+      "Customer self-service portal where account contacts can view price history or download previous sheets on demand",
+      "Automated master price list ingestion from supplier EDI feeds, ERP exports, or emailed supplier PDFs",
+      "Delivery failure tracking, bounce handling, or read-receipt confirmation for undelivered price sheet emails"
+    ],
+    "success_metric": "Within 90 minutes of webhook trigger, every active account in the Airtable customer table has a corresponding log entry with a non-null send_timestamp, and a spot-check of 3 account contact inboxes shows received emails containing a PDF with item count matching the master sheet row count and prices equal to master cost × that account's tier_multiplier",
+    "risky_assumption": "Regional wholesale distributors ($5M–$50M revenue) will pay $400–$600/month for automated price sheet distribution rather than spending 3 hours having an inside-sales rep do it manually"
+  }
+}
