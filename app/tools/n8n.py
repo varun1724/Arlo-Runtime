@@ -348,6 +348,14 @@ class N8nClient:
         if isinstance(workflow_json, dict) and "settings" not in workflow_json:
             workflow_json = {**workflow_json, "settings": {}}
 
+        # n8n v2 treats `active` as read-only on create — activation
+        # is done via the separate POST /activate endpoint. Claude
+        # sometimes includes "active": true in workflow.json, which
+        # makes n8n return 400 "request/body/active is read-only".
+        # Strip it defensively before posting.
+        if isinstance(workflow_json, dict) and "active" in workflow_json:
+            workflow_json = {k: v for k, v in workflow_json.items() if k != "active"}
+
         result = await self._request(
             "POST", "/api/v1/workflows", json=workflow_json
         )
