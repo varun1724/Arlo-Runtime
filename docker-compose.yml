@@ -59,6 +59,8 @@ services:
       # the WireGuard layer), so the default secure cookie blocks login.
       # Tailscale-only access makes the secure cookie redundant.
       - N8N_SECURE_COOKIE=false
+      - N8N_EDITOR_BASE_URL=https://desktop-u60udt0.tailf3eaff.ts.net
+      - WEBHOOK_URL=https://desktop-u60udt0.tailf3eaff.ts.net
     depends_on:
       db:
         condition: service_healthy
