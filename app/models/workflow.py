@@ -56,6 +56,15 @@ class StepDefinition(BaseModel):
     """
     requires_approval: bool = False  # if True, workflow pauses before this step
     max_retries: int = 0  # auto-retry this step N times before failing the workflow
+    model_override: str | None = None
+    """Per-step Claude model override (e.g. ``"claude-opus-4-7"``, ``"sonnet"``).
+
+    When set, this value is passed to the Claude CLI ``--model`` flag instead
+    of the global ``settings.research_model`` (or ``settings.builder_model``)
+    default. Used to run individual pipeline steps on a stronger model
+    without affecting other pipelines that share the research executor.
+    Defaults to None — steps use the configured global model.
+    """
     output_schema: str | None = None
     """Name of a Pydantic model in app.workflows.schemas.STEP_OUTPUT_SCHEMAS.
 

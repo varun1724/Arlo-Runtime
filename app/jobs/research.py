@@ -457,11 +457,13 @@ async def execute_research_job(session: AsyncSession, job: JobRow) -> None:
         # Resolve the output schema for this step (if any)
         schema_cls: type[BaseModel] | None = None
         timeout_override: int | None = None
+        model_override: str | None = None
         if is_workflow_job:
             step = await _load_step_definition(session, job)
             if step is not None:
                 schema_cls = get_schema(step.output_schema)
                 timeout_override = step.timeout_override
+                model_override = step.model_override
 
         # Step 2: Run Claude Code
         await update_job_progress(
@@ -520,7 +522,7 @@ async def execute_research_job(session: AsyncSession, job: JobRow) -> None:
         result = await run_claude(
             prompt,
             allow_permissions=True,
-            model=settings.research_model,
+            model=model_override or settings.research_model,
             timeout=timeout_override,
             on_progress=progress_cb,
         )

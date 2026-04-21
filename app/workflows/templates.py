@@ -164,6 +164,7 @@ STARTUP_IDEA_PIPELINE = {
             "timeout_override": 900,
             "max_retries": 2,
             "output_schema": "startup_landscape_v1",
+            "model_override": "claude-opus-4-7",
         },
         # ──────────────────────────────────────────────────
         # Step 1: Deep dive on top opportunities
@@ -267,6 +268,7 @@ STARTUP_IDEA_PIPELINE = {
             "timeout_override": 1800,
             "max_retries": 2,
             "output_schema": "startup_deep_dive_v1",
+            "model_override": "claude-opus-4-7",
         },
         # ──────────────────────────────────────────────────
         # Step 2: Contrarian analysis — why would these FAIL?
@@ -354,6 +356,7 @@ STARTUP_IDEA_PIPELINE = {
             "timeout_override": 1800,
             "max_retries": 2,
             "output_schema": "startup_contrarian_v1",
+            "model_override": "claude-opus-4-7",
             # Round 3: recovery loop. If contrarian leaves fewer than 3
             # surviving (verdict in [survives, weakened]) opportunities,
             # loop back to landscape_scan. The landscape prompt detects
@@ -486,6 +489,7 @@ STARTUP_IDEA_PIPELINE = {
             "timeout_override": 1200,
             "max_retries": 2,
             "output_schema": "startup_synthesis_v1",
+            "model_override": "claude-opus-4-7",
         },
         # ──────────────────────────────────────────────────
         # Step 4: User approval gate
