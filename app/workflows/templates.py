@@ -604,7 +604,7 @@ STARTUP_IDEA_PIPELINE = {
             # already-researched output; it doesn't need Opus's raw depth.
             # Sonnet follows instructions reliably on structured output at
             # ~1/5 the input cost and ~1/5 the output cost.
-            "model_override": "claude-sonnet-4-6",
+            "model_override": "claude-opus-4-7",
         },
         # ──────────────────────────────────────────────────
         # Step 5: Pre-sale validation plan for top 3 picks
@@ -682,7 +682,7 @@ STARTUP_IDEA_PIPELINE = {
             "context_inputs": ["synthesis"],
             # Validation plans are concrete GTM reasoning — Sonnet is
             # strong here and already has the synthesis context cached.
-            "model_override": "claude-sonnet-4-6",
+            "model_override": "claude-opus-4-7",
         },
         # ──────────────────────────────────────────────────
         # Step 6: User approval gate
@@ -1309,7 +1309,7 @@ SIDE_HUSTLE_PIPELINE = {
             # Synthesis is aggregation + scoring over already-researched
             # output. Sonnet follows the formula reliably at ~1/5 the
             # input cost vs Opus.
-            "model_override": "claude-sonnet-4-6",
+            "model_override": "claude-opus-4-7",
         },
         # ──────────────────────────────────────────────────
         # Step 5: Subscription pre-sale validation plan (Batch D)
@@ -1387,7 +1387,7 @@ SIDE_HUSTLE_PIPELINE = {
             "max_retries": 1,
             "output_schema": "startup_validation_v1",
             "context_inputs": ["synthesis"],
-            "model_override": "claude-sonnet-4-6",
+            "model_override": "claude-opus-4-7",
         },
         # ──────────────────────────────────────────────────
         # Step 6: User picks a hustle
