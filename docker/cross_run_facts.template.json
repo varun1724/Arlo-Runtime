@@ -1,0 +1,43 @@
+{
+  "_comment": "Seed facts for the cross-run facts cache. Copy this to /workspaces/cross_run_facts.json inside a worker container (or mount it there via a volume) to enable the facts-block injection into landscape_scan. Edit freely — every workflow created after a change picks up the new file at creation time. Consumed by app/services/facts_cache.py::load_facts.",
+  "regulatory_events": [
+    {"name": "Illinois 1/1/2026 nexus amnesty window close", "impact": "dated regulatory buying moment for state-nexus monitoring tools aimed at CPAs"},
+    {"name": "FSMA 204 compliance deadline, January 2026", "impact": "FDA food traceability forced-buy moment for mid-market food processors"},
+    {"name": "EU AI Act Article 15 enforcement DELAYED to December 2027", "impact": "kills urgency on EU AI compliance automation plays; ServiceNow and IBM already ship GA compliance products"},
+    {"name": "Shopify B2B GA rollout to non-Plus merchants", "impact": "200K+ merchants get native B2B primitives for the first time — window for AR/net-terms tooling on top"},
+    {"name": "FinCEN Corporate Transparency Act (BOI reporting) churn 2024-2025", "impact": "LLC entity owners face repeated enact/pause/re-enact cycles; every small accounting firm has clients needing to file"}
+  ],
+  "incumbent_moves": [
+    {"incumbent": "Intuit", "event": "Agentic AI launch + May 2025 bank-feed takeover", "date": "2025-07", "impact": "kills 'AI bookkeeping wrapper' plays built on QBO feature surface within 18 months"},
+    {"incumbent": "Xero", "event": "JAX (AI copilot) launch", "date": "2025-09", "impact": "same as Intuit on the Xero side"},
+    {"incumbent": "Datadog", "event": "native vLLM integration", "date": "2025-Q4", "impact": "kills standalone LLM observability wedges"},
+    {"incumbent": "Langfuse", "event": "acquired by ClickHouse", "date": "2026-Q1", "impact": "consolidates OTel trace tooling; neutrality plays face faster closure"},
+    {"incumbent": "Traceloop", "event": "acquired by ServiceNow", "date": "2026-Q1"},
+    {"incumbent": "Invariant", "event": "acquired by Snyk", "date": "2026-Q1"},
+    {"incumbent": "DX", "event": "acquired by Atlassian for ~$1B", "date": "2026-Q1"},
+    {"incumbent": "Loopio", "event": "SmartScan + Automated Answers (Oct 2025) + Sept 2025 portal extension", "date": "2025-10", "impact": "horizontal RFP incumbent actively expanding into ESG/compliance verticals; 12-18 month response window"},
+    {"incumbent": "Semgrep", "event": "$100M Series D earmarked for AI-generated code rules", "date": "2026", "impact": "kills standalone 'agent-slop linter' plays within 2 quarters unless defensibility moat exists"},
+    {"incumbent": "VelocityAI", "event": "SDS/PFAS extractor launch", "date": "2025-08"},
+    {"incumbent": "CarbonChain", "event": "Supplier Catalogue pulling US suppliers in free", "date": "2025"}
+  ],
+  "funded_competitors": [
+    {"name": "Anrok", "funding": "$525M", "vertical": "sales tax automation (SaaS ICP)"},
+    {"name": "Numeral", "funding": "$350M", "vertical": "sales tax automation"},
+    {"name": "Assent", "vertical": "supplier-side compliance (buyer-facing)", "impact": "could launch mid-market ERP-connector tier at $25K+ to defend"},
+    {"name": "Sayari", "funding": "$293M", "vertical": "screening/sanctions; has capacity to drop into mid-market API any quarter"},
+    {"name": "Resolve Pay / Slope / Billd", "vertical": "B2B net terms on Shopify merchants (financing-first, could add workflow free)"},
+    {"name": "Fieldguide", "funding": "$75M Series C (Feb 2026)", "vertical": "firm-level QC for audit/accounting"},
+    {"name": "Braintrust", "valuation": "$800M", "vertical": "LLM evals"},
+    {"name": "CodeRabbit", "funding": "$88M", "vertical": "AI code review"},
+    {"name": "Xendoo + Infinite", "vertical": "scaled catch-up bookkeeping delivery — price floor competitors can't match"}
+  ],
+  "dead_playbooks": [
+    {"pattern": "thin AI wrapper over QuickBooks Online", "reason": "Intuit Agentic AI July 2025 absorbs anything feature-level", "learned_from": "2026-04-21 accounting-firms run"},
+    {"pattern": "thin AI wrapper over Shopify Cart Transform", "reason": "architectural impossibility — Cart Transform functions can't do what the idea needed", "learned_from": "2026-04-16 merchant-ops run"},
+    {"pattern": "EU AI Act compliance automation", "reason": "enforcement delayed to Dec 2027 by EU Parliament", "learned_from": "2026-04-21 AI-agent-frameworks run"},
+    {"pattern": "ML dev tools that depend on one vendor's SDK", "reason": "Datadog/AMD/HuggingFace shipped native integrations within 3 months of landscape", "learned_from": "2026-04-11 ML-dev-tools run"},
+    {"pattern": "buyer-side compliance questionnaire tool", "reason": "Loopio + Assent + Sphera already dominate the buyer ICP; supplier-side inversion is the wedge", "learned_from": "2026-04-21 mfg-compliance run"},
+    {"pattern": "authenticated carrier/platform portal scraping", "reason": "Compulife v. Newman precedent; MSAs violated", "learned_from": "2026-04-12 SMB-automation run"},
+    {"pattern": "labor-inclusive bookkeeping (Bench, Botkeeper model)", "reason": "Bench Dec 2024 collapse + Botkeeper Feb 2026 confirm the model dies", "learned_from": "2026-04-21 accounting-firms run"}
+  ]
+}

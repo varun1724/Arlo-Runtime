@@ -26,6 +26,10 @@ COPY alembic.ini .
 RUN useradd -m -s /bin/bash arlo && \
     mkdir -p /workspaces && chown -R arlo:arlo /workspaces
 
+# Facts cache seed template — worker entrypoint copies this into the
+# /workspaces volume on first start if the cache file doesn't exist.
+COPY docker/cross_run_facts.template.json /opt/arlo/cross_run_facts.template.json
+
 # Entrypoint fixes volume permissions then drops to arlo user
 COPY docker/worker-entrypoint.sh /usr/local/bin/worker-entrypoint.sh
 RUN chmod +x /usr/local/bin/worker-entrypoint.sh

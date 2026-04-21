@@ -30,6 +30,7 @@ from app.models.workflow import (
 )
 from app.services import workflow_service
 from app.services.signed_urls import verify_signed_token
+from app.services.facts_cache import get_facts_block
 from app.workflows.templates import TEMPLATES, _apply_deep_research_mode
 
 router = APIRouter(prefix="/workflows", tags=["workflows"], dependencies=[Depends(verify_token)])
@@ -132,6 +133,12 @@ async def create_workflow_from_template(
     # prefixed with underscore to avoid collision with user context.
     if body.max_cost_usd is not None:
         initial_context["_max_cost_usd"] = body.max_cost_usd
+
+    # Cross-run facts cache: inject known-facts block if the cache file
+    # exists. Empty string if no cache — prompts render that as a clean
+    # "no prior facts available" via the {known_facts} placeholder.
+    facts_block = get_facts_block()
+    initial_context["known_facts"] = facts_block if facts_block else "(none recorded yet)"
 
     request = CreateWorkflowRequest(
         name=template["name"],
