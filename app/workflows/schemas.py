@@ -634,12 +634,13 @@ class SideHustleRanking(BaseModel):
     monthly_income_estimate: str = Field(min_length=3)
     monthly_costs: str = Field(min_length=3)
     contrarian_verdict: SideHustleContrarianVerdict
-    # Raw weighted sum before contrarian adjustment. Max possible per
-    # the Round 1 formula is 65 (all 10s), realistic range ~20-55.
-    raw_score: float = Field(ge=6.0, le=65.0)
+    # Raw weighted sum before contrarian adjustment. With weights summing
+    # to 10.0 across six 1-10 dimensions, max possible is 100 (all 10s),
+    # realistic surviving range ~55-80.
+    raw_score: float = Field(ge=10.0, le=100.0)
     # Adjusted total after contrarian weighting (×0.8 for 'weakened').
-    # Min 4.8 = all-ones * 0.8; max 65.0.
-    total_score: float = Field(ge=4.8, le=65.0)
+    # Min 8.0 = all-ones * 0.8; max 100.0 ('survives' unchanged).
+    total_score: float = Field(ge=8.0, le=100.0)
     head_to_head: str = Field(min_length=15)
     surviving_risks: list[str] = Field(default_factory=list)
     n8n_workflow_spec: SideHustleWorkflowSpec

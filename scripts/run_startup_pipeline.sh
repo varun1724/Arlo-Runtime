@@ -170,7 +170,7 @@ else:
               f'feasibility={scores.get(\"solo_dev_feasibility\",\"?\")}/10  '
               f'revenue={scores.get(\"revenue_potential\",\"?\")}/10  '
               f'evidence={scores.get(\"evidence_quality\",\"?\")}/10  '
-              f'TOTAL={total}/50')
+              f'TOTAL={total}/100')
         if risks:
             print(f'      Risks: {\", \".join(risks[:3])}')
         if mvp:

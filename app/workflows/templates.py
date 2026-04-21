@@ -423,10 +423,15 @@ STARTUP_IDEA_PIPELINE = {
                 "   - data_advantage: does proprietary data improve the product over time?\n"
                 "   - brand_or_trust: does brand reputation create a buying preference?\n"
                 "   - distribution_lock: privileged access to a channel competitors can't reach?\n\n"
-                "4. Compute a WEIGHTED total score (max 100) using these weights for a solo dev:\n"
-                "   total_score = (solo_dev_feasibility * 1.5) + (revenue_potential * 1.5) + \n"
-                "                 (market_timing * 1.0) + (defensibility * 1.0) + (evidence_quality * 0.5)\n"
-                "   Round to one decimal. Solo dev feasibility and revenue potential matter most.\n\n"
+                "4. Compute a WEIGHTED total score on a 0-100 scale using these weights "
+                "for a solo dev (weights sum to 10.0, so max = 10 * 10 = 100):\n"
+                "   total_score = (solo_dev_feasibility * 3.0) + (revenue_potential * 3.0) + \n"
+                "                 (market_timing * 2.0) + (defensibility * 1.5) + (evidence_quality * 0.5)\n"
+                "   Round to one decimal. Solo dev feasibility and revenue potential matter most.\n"
+                "   Do NOT inflate dimension scores to hit a target total — score each dimension\n"
+                "   honestly against its anchor, then let the formula produce whatever total it\n"
+                "   produces. A realistic surviving opportunity will typically land in the 55-80\n"
+                "   range; scores above 85 should be rare.\n\n"
                 "5. RANK opportunities by weighted total_score (highest first). For each ranked "
                 "opportunity, also write a 'head_to_head' field explaining WHY it beats the opportunity "
                 "ranked one position below it (the lowest-ranked one explains why it still made the cut).\n"
@@ -465,7 +470,7 @@ STARTUP_IDEA_PIPELINE = {
                 '        "brand_or_trust": {{"rating": "none|weak|strong", "justification": "string"}},\n'
                 '        "distribution_lock": {{"rating": "none|weak|strong", "justification": "string"}}\n'
                 '      }},\n'
-                '      "total_score": 38.5,\n'
+                '      "total_score": 72.0,\n'
                 '      "head_to_head": "string — why this beats the next-ranked opportunity",\n'
                 '      "surviving_risks": ["string — risks that remain after contrarian analysis"],\n'
                 '      "mvp_spec": {{\n'
@@ -936,20 +941,26 @@ SIDE_HUSTLE_PIPELINE = {
                 "INSTRUCTIONS:\n\n"
                 "1. ONLY include opportunities with 'survives' or 'weakened' verdicts. "
                 "Drop everything that was 'killed' in the contrarian step.\n\n"
-                "2. WEIGHTED SCORING — apply these weights to each surviving opportunity's "
-                "feasibility scores. Solo operators care most about revenue potential and "
-                "time to first dollar; long-term scalability matters less because the "
-                "operator can always build a second workflow.\n\n"
-                "   total_score = (revenue_potential × 1.5)\n"
-                "               + (time_to_first_dollar × 1.5)\n"
-                "               + (n8n_specific_feasibility × 1.0)\n"
-                "               + (maintenance_effort × 1.0)\n"
-                "               + (legal_safety × 1.0)\n"
+                "2. WEIGHTED SCORING on a 0-100 scale — apply these weights to each "
+                "surviving opportunity's feasibility scores. Weights sum to 10.0 so the "
+                "weighted sum of six 1-10 dimensions maxes at 100. Solo operators care "
+                "most about revenue potential and time to first dollar; long-term "
+                "scalability matters less because the operator can always build a "
+                "second workflow.\n\n"
+                "   raw_score   = (revenue_potential × 2.5)\n"
+                "               + (time_to_first_dollar × 2.5)\n"
+                "               + (n8n_specific_feasibility × 1.5)\n"
+                "               + (maintenance_effort × 1.5)\n"
+                "               + (legal_safety × 1.5)\n"
                 "               + (scalability × 0.5)\n\n"
-                "   Maximum possible: 65. Round to 1 decimal place.\n\n"
-                "   Apply a contrarian adjustment AFTER the weighted sum:\n"
-                "   - 'survives' verdict: no change\n"
-                "   - 'weakened' verdict: multiply total_score by 0.8\n\n"
+                "   Maximum possible: 100. Round to 1 decimal place.\n\n"
+                "   Apply a contrarian adjustment AFTER the weighted sum to produce\n"
+                "   total_score:\n"
+                "   - 'survives' verdict: total_score = raw_score\n"
+                "   - 'weakened' verdict: total_score = raw_score × 0.8\n\n"
+                "   Do NOT inflate dimension scores to hit a target total — score each\n"
+                "   dimension honestly, then let the formula produce whatever total it\n"
+                "   produces. A realistic surviving opportunity typically lands 55-80.\n\n"
                 "3. RANK opportunities by adjusted total_score (highest first). For each "
                 "ranked entry, also write a 'head_to_head' field explaining WHY it beats "
                 "the opportunity ranked one position below it. The lowest-ranked entry "
@@ -995,8 +1006,8 @@ SIDE_HUSTLE_PIPELINE = {
                 '      "monthly_income_estimate": "string — realistic range",\n'
                 '      "monthly_costs": "string — itemized tools",\n'
                 '      "contrarian_verdict": "survives|weakened",\n'
-                '      "raw_score": 45.5,\n'
-                '      "total_score": 36.4,\n'
+                '      "raw_score": 72.0,\n'
+                '      "total_score": 57.6,\n'
                 '      "head_to_head": "string — why this beats the next-ranked opportunity",\n'
                 '      "surviving_risks": ["string — risks that remain after contrarian"],\n'
                 '      "n8n_workflow_spec": {{\n'
@@ -1329,9 +1340,28 @@ FREELANCE_SCANNER_PIPELINE = {
                 "EVALUATION:\n{evaluation}\n\n"
                 "CONTRARIAN:\n{contrarian}\n\n"
                 "INSTRUCTIONS:\n"
-                "1. Only include niches with 'survives' or 'weakened' verdicts.\n"
-                "2. Rank by total score weighted by contrarian verdict.\n"
-                "3. For the top 3, provide a DETAILED monitoring specification:\n"
+                "1. Only include niches with 'survives' or 'weakened' verdicts.\n\n"
+                "2. WEIGHTED SCORING on a 0-100 scale — apply these weights to the "
+                "six dimensions scored in the evaluation step. Weights sum to 10.0 "
+                "so six 1-10 scores max at 100. Pay rate and demand volume dominate "
+                "because a solo freelancer needs real money coming in, not just ease "
+                "of scraping.\n\n"
+                "   raw_score   = (hourly_rate × 2.5)\n"
+                "               + (demand_volume × 2.5)\n"
+                "               + (competition × 1.5)\n"
+                "               + (skill_match × 1.5)\n"
+                "               + (remote_friendly × 1.0)\n"
+                "               + (monitorability × 1.0)\n\n"
+                "   Maximum possible: 100. Round to 1 decimal place.\n\n"
+                "   Apply the contrarian adjustment AFTER the weighted sum to produce\n"
+                "   total_score:\n"
+                "   - 'survives' verdict: total_score = raw_score\n"
+                "   - 'weakened' verdict: total_score = raw_score × 0.8\n\n"
+                "   Do NOT inflate dimension scores to hit a target — score honestly\n"
+                "   against the anchors from the evaluation step, then let the formula\n"
+                "   produce the total. A realistic surviving niche lands 55-80.\n\n"
+                "3. Rank by adjusted total_score (highest first).\n\n"
+                "4. For the top 3, provide a DETAILED monitoring specification:\n"
                 "   - Exact RSS feed URL or API endpoint to poll\n"
                 "   - Search query parameters / keywords\n"
                 "   - Minimum rate filter\n"
@@ -1347,7 +1377,9 @@ FREELANCE_SCANNER_PIPELINE = {
                 '      "platform": "string",\n'
                 '      "one_liner": "string — one sentence summary",\n'
                 '      "hourly_rate_range": "string",\n'
-                '      "total_score": 48,\n'
+                '      "contrarian_verdict": "survives|weakened",\n'
+                '      "raw_score": 72.0,\n'
+                '      "total_score": 72.0,\n'
                 '      "surviving_risks": ["string"],\n'
                 '      "monitoring_spec": {{\n'
                 '        "feed_url": "string — RSS or API URL to poll",\n'
