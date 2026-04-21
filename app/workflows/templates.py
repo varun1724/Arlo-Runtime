@@ -52,6 +52,16 @@ def _apply_deep_research_mode(
             step["timeout_override"] = 1800  # was 900
         elif name == "deep_dive":
             step["timeout_override"] = 2700  # was 1800; 45 min for deep mode
+        # Batch B new steps (startup pipeline only)
+        elif name == "freshness_check":
+            # Deep mode produces more survivors → more per-opportunity
+            # 30-day news queries. Bump from 900s default to 1500s.
+            step["timeout_override"] = 1500
+        elif name == "validation_plan":
+            # Deep mode ranks more opportunities (top 7 vs top 5); the
+            # plan step addresses top 3-5 of those, so the scaling is
+            # modest. Bump from 900s to 1200s.
+            step["timeout_override"] = 1200
         # Round 6.B1: side hustle pipeline. Same proportional bumps —
         # research goes broader (15-20 opps vs 10-12) and feasibility
         # has more per-opportunity competitor + unit-economics work,
@@ -370,7 +380,70 @@ STARTUP_IDEA_PIPELINE = {
             },
         },
         # ──────────────────────────────────────────────────
-        # Step 3: Final synthesis and ranking
+        # Step 3: Freshness decay check
+        # ──────────────────────────────────────────────────
+        # The landscape + deep_dive + contrarian research can span 30-60
+        # minutes of wall-clock; in fast-moving categories (AI tooling,
+        # dev infrastructure) incumbents ship meaningful competitive
+        # moves on that timescale. Run one narrow 30-day news pass over
+        # the survivors before synthesis so the ranking reflects what's
+        # true today, not what was true when landscape ran.
+        {
+            "name": "freshness_check",
+            "job_type": "research",
+            "prompt_template": (
+                "You are a research analyst doing a final 30-day freshness pass on the "
+                "opportunities that survived contrarian review. The earlier research may "
+                "have data that's weeks stale — your job is to catch recent incumbent "
+                "moves that would materially change a surviving opportunity's verdict.\n\n"
+                "CONTRARIAN OUTPUT:\n{contrarian}\n\n"
+                "INSTRUCTIONS:\n"
+                "For EACH opportunity with verdict 'survives' or 'weakened', use web "
+                "search restricted to the LAST 30 DAYS to check for:\n"
+                "1. New product launches, GA announcements, or strategic acquisitions by "
+                "the named incumbents from the contrarian analysis.\n"
+                "2. Funding rounds that give an incumbent a war chest aimed at this wedge.\n"
+                "3. Regulatory enforcement updates that change the underlying timing signal "
+                "(e.g., an enforcement date slipped, a standard got adopted earlier than "
+                "expected, a rule got rescinded).\n"
+                "4. Anything else that wasn't true when the landscape/deep_dive ran but is "
+                "true now.\n\n"
+                "CLASSIFY each opportunity:\n"
+                "- STABLE: no material change in the last 30 days. Original verdict holds.\n"
+                "- WEAKENED_FURTHER: material move narrows the window but doesn't kill.\n"
+                "  Synthesis should deduct 5-10 points from its total_score.\n"
+                "- KILLED_POST_CONTRARIAN: incumbent move eliminates the wedge. Synthesis "
+                "  MUST drop this from final_rankings.\n\n"
+                "QUALITY RULES:\n"
+                "- Every non-STABLE classification MUST cite a specific URL + date of the "
+                "news item that triggered the downgrade. No handwaving.\n"
+                "- Default to STABLE if you can't find specific 30-day evidence. Do not "
+                "downgrade based on speculation.\n\n"
+                "OUTPUT: Respond with ONLY valid JSON:\n"
+                '{{\n'
+                '  "freshness_results": [\n'
+                '    {{\n'
+                '      "name": "string — opportunity name exactly as in contrarian",\n'
+                '      "status": "STABLE|WEAKENED_FURTHER|KILLED_POST_CONTRARIAN",\n'
+                '      "evidence": "string — source URL + date + one-sentence summary, or null if STABLE",\n'
+                '      "impact": "string — one sentence on how this changes the verdict"\n'
+                '    }}\n'
+                '  ],\n'
+                '  "scan_notes": "string — 1-2 sentences on what you searched and what you found overall"\n'
+                '}}'
+            ),
+            "output_key": "freshness",
+            "condition": {"field": "contrarian", "operator": "not_empty"},
+            "timeout_override": 900,
+            "max_retries": 1,
+            "output_schema": "startup_freshness_v1",
+            # Freshness is a narrow targeted web-search pass (~5-10 queries
+            # over a known shortlist). Opus earns its price here because
+            # the "is this news material?" judgment calls matter.
+            "model_override": "claude-opus-4-7",
+        },
+        # ──────────────────────────────────────────────────
+        # Step 4: Final synthesis and ranking
         # ──────────────────────────────────────────────────
         {
             "name": "synthesis_and_ranking",
@@ -381,13 +454,17 @@ STARTUP_IDEA_PIPELINE = {
                 "LANDSCAPE:\n{landscape}\n\n"
                 "DEEP DIVE:\n{deep_dive}\n\n"
                 "CONTRARIAN ANALYSIS:\n{contrarian}\n\n"
+                "FRESHNESS CHECK (last-30-day incumbent moves):\n{freshness}\n\n"
                 "Deep research mode: {deep_mode}\n\n"
                 "DEEP RESEARCH MODE: If 'Deep research mode' is 'true', the user is on Claude Max. "
                 "Rank 7 opportunities in final_rankings instead of 3-5, and write MVP specs for "
                 "all of them (not just the top 5).\n\n"
                 "INSTRUCTIONS:\n"
-                "1. Only include opportunities that received a 'survives' or 'weakened' verdict.\n"
-                "   Drop anything that was 'killed' in the contrarian analysis.\n\n"
+                "1. Drop every opportunity that either (a) got a 'killed' verdict in the "
+                "contrarian step, or (b) was marked KILLED_POST_CONTRARIAN by the freshness "
+                "check. Both are exclusion signals of equal weight. Include only the rest "
+                "('survives' or 'weakened' in contrarian AND not KILLED_POST_CONTRARIAN in "
+                "freshness).\n\n"
                 "2. Score each surviving opportunity on five dimensions (integer 1-10). Use these "
                 "ANCHORS so scores are comparable across runs — do not invent your own scale:\n\n"
                 "   market_timing (is NOW the right moment?)\n"
@@ -445,6 +522,10 @@ STARTUP_IDEA_PIPELINE = {
                 "   total_score = (solo_dev_feasibility * 3.0) + (revenue_potential * 3.0) + \n"
                 "                 (market_timing * 2.0) + (defensibility * 1.5) + (evidence_quality * 0.5)\n"
                 "   Round to one decimal. Solo dev feasibility and revenue potential matter most.\n"
+                "   FRESHNESS DEDUCTION: if the opportunity was marked WEAKENED_FURTHER by the\n"
+                "   freshness check, deduct 5-10 points from total_score (depending on how\n"
+                "   severe the incumbent move was). Cite the deduction in head_to_head or\n"
+                "   surviving_risks. Opportunities marked STABLE get no deduction.\n"
                 "   Do NOT inflate dimension scores to hit a target total — score each dimension\n"
                 "   honestly against its anchor, then let the formula produce whatever total it\n"
                 "   produces. A realistic surviving opportunity will typically land in the 55-80\n"
@@ -518,7 +599,85 @@ STARTUP_IDEA_PIPELINE = {
             "model_override": "claude-sonnet-4-6",
         },
         # ──────────────────────────────────────────────────
-        # Step 4: User approval gate
+        # Step 5: Pre-sale validation plan for top 3 picks
+        # ──────────────────────────────────────────────────
+        # The synthesis produces a ranking; the actual next action for
+        # the user is not "build the MVP" but "validate paying demand
+        # before building." This step turns the ranking into a concrete
+        # 4-week pre-sale playbook so the approval gate presents the
+        # user with a ready-to-execute plan, not just a rank-ordered list.
+        {
+            "name": "validation_plan",
+            "job_type": "research",
+            "prompt_template": (
+                "You are a GTM strategist producing a 4-week PRE-SALE validation plan for "
+                "the top 3 opportunities in the synthesis. The plan's goal is to confirm "
+                "paying demand BEFORE the founder writes production code — via pre-sales, "
+                "letters of intent, or annual-plan deposits.\n\n"
+                "SYNTHESIS:\n{synthesis}\n\n"
+                "For EACH of the top 3 ranked opportunities, produce a validation plan with:\n\n"
+                "1. specific_outreach_targets: 5-10 NAMED companies or individuals reachable\n"
+                "   WITHOUT paid ads. For each, include:\n"
+                "   - name: company name OR an individual's name + role\n"
+                "   - why_them: one-sentence match against the opportunity's ICP\n"
+                "   - reachable_via: LinkedIn DM / community post / warm intro / newsletter reply\n"
+                "   Do NOT list 'CPA firms' — name 3-5 specific firms. Specificity is the\n"
+                "   whole point.\n\n"
+                "2. contact_channel: the PRIMARY channel for outreach (one of: LinkedIn DM,\n"
+                "   Slack community, Reddit subreddit post, cold email, warm intro via X).\n\n"
+                "3. cold_message_script: 80-150 word opener. Must:\n"
+                "   - Lead with a specific pain from the deep_dive research (not generic)\n"
+                "   - Reference a named competitor or specific workflow\n"
+                "   - End with a binary ask ('would you pay $X/mo for this before I build it?')\n"
+                "   - NOT start with 'Hi, hope you're well' or any other generic greeting\n\n"
+                "4. disqualification_criteria: 3 specific conditions that should make the\n"
+                "   founder DROP this idea. Each must be a testable fact, e.g., '<3 of 10\n"
+                "   contacted respond within 7 days' or 'nobody agrees to a $99 annual\n"
+                "   pre-sale deposit.'\n\n"
+                "5. go_no_go_metric: the SINGLE number at end-of-week-4 that triggers\n"
+                "   build-or-drop. Format: '≥N <thing>, else drop.' Example: '≥5 signed\n"
+                "   letters of intent at $99/mo annual pre-pay, else drop.'\n\n"
+                "6. expected_signal_timeline: 3-4 short sentences describing what you expect\n"
+                "   by end of week 1, week 2, and week 4. Ground expectations in realistic\n"
+                "   response rates for the channel (e.g., cold LinkedIn ~8-12%, warm intro\n"
+                "   ~40-60%).\n\n"
+                "QUALITY RULES:\n"
+                "- No handwaving. 'Reach out to CPAs' is not acceptable. 'DM these 7 named\n"
+                "  CPAs sourced from the deep_dive research' is.\n"
+                "- Every pre-sale ask must be a concrete dollar amount, not 'some amount.'\n"
+                "- The go_no_go_metric must be passable or failable — not 'get feedback.'\n\n"
+                "OUTPUT: Respond with ONLY valid JSON:\n"
+                '{{\n'
+                '  "validation_plans": [\n'
+                '    {{\n'
+                '      "rank": 1,\n'
+                '      "name": "string — must match a name from synthesis.final_rankings",\n'
+                '      "specific_outreach_targets": [\n'
+                '        {{"name": "string", "why_them": "string", "reachable_via": "string"}}\n'
+                '      ],\n'
+                '      "contact_channel": "string",\n'
+                '      "cold_message_script": "string — 80-150 words",\n'
+                '      "disqualification_criteria": ["string — testable fact"],\n'
+                '      "go_no_go_metric": "string — single binary metric",\n'
+                '      "expected_signal_timeline": "string — week-by-week expectations"\n'
+                '    }}\n'
+                '  ],\n'
+                '  "cross_cutting_notes": "string — 1-2 sentences on anything the founder '
+                'should know before starting all three validations in parallel"\n'
+                '}}'
+            ),
+            "output_key": "validation_plans",
+            "condition": {"field": "synthesis", "operator": "not_empty"},
+            "timeout_override": 900,
+            "max_retries": 1,
+            "output_schema": "startup_validation_v1",
+            "context_inputs": ["synthesis"],
+            # Validation plans are concrete GTM reasoning — Sonnet is
+            # strong here and already has the synthesis context cached.
+            "model_override": "claude-sonnet-4-6",
+        },
+        # ──────────────────────────────────────────────────
+        # Step 6: User approval gate
         # ──────────────────────────────────────────────────
         {
             "name": "user_picks_idea",

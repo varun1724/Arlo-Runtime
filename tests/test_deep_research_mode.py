@@ -52,6 +52,22 @@ def test_apply_bumps_synthesis_timeout():
     assert synthesis["timeout_override"] == 1800
 
 
+def test_apply_bumps_freshness_check_timeout():
+    """Batch B: deep mode bumps freshness_check timeout to 1500s because
+    more survivors → more per-opportunity 30-day news queries."""
+    steps, _ = _apply_deep_research_mode(STARTUP_IDEA_PIPELINE["steps"], {})
+    freshness = next(s for s in steps if s["name"] == "freshness_check")
+    assert freshness["timeout_override"] == 1500
+
+
+def test_apply_bumps_validation_plan_timeout():
+    """Batch B: deep mode bumps validation_plan timeout to 1200s because
+    deep mode ranks more opps → more plans to produce."""
+    steps, _ = _apply_deep_research_mode(STARTUP_IDEA_PIPELINE["steps"], {})
+    validation = next(s for s in steps if s["name"] == "validation_plan")
+    assert validation["timeout_override"] == 1200
+
+
 def test_apply_adds_deep_mode_to_context():
     """Deep mode injects ``deep_mode="true"`` as a string into initial_context."""
     _, context = _apply_deep_research_mode(

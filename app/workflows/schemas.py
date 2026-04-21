@@ -314,6 +314,101 @@ class SynthesisResult(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Step 3 (new, Batch B): freshness_check → FreshnessResult
+# ─────────────────────────────────────────────────────────────────────
+# Narrow last-30-day incumbent-move scan over contrarian survivors.
+# Feeds synthesis with STABLE / WEAKENED_FURTHER / KILLED_POST_CONTRARIAN
+# flags so the ranking reflects what's true today, not what was true
+# when landscape ran.
+
+FreshnessStatus = Literal[
+    "STABLE", "WEAKENED_FURTHER", "KILLED_POST_CONTRARIAN",
+]
+
+
+class FreshnessResultEntry(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    name: str = Field(min_length=2)
+    status: FreshnessStatus
+    # null is acceptable when STABLE. Non-STABLE entries MUST cite a
+    # specific URL + date per the prompt's quality rule; we enforce
+    # non-empty via a model_validator rather than Field(min_length)
+    # because the field is allowed to be None for STABLE.
+    evidence: str | None = None
+    impact: str = Field(min_length=5)
+
+    @model_validator(mode="after")
+    def _non_stable_requires_evidence(self):
+        if self.status != "STABLE" and (
+            self.evidence is None or not self.evidence.strip()
+        ):
+            raise ValueError(
+                f"{self.status} entries must cite specific evidence "
+                "(URL + date); got an empty evidence field"
+            )
+        return self
+
+
+class FreshnessResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    # At least one survivor was checked — otherwise the whole pipeline
+    # should have caught "everything killed" upstream in contrarian.
+    freshness_results: list[FreshnessResultEntry] = Field(min_length=1)
+    scan_notes: str = Field(min_length=10)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Step 5 (new, Batch B): validation_plan → ValidationPlanResult
+# ─────────────────────────────────────────────────────────────────────
+# 4-week pre-sale validation playbook for the top 3 ranked
+# opportunities. Not fluff — the go_no_go_metric is the decision gate
+# the founder uses to commit to (or drop) a build.
+
+
+class ValidationOutreachTarget(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    name: str = Field(min_length=2)
+    why_them: str = Field(min_length=10)
+    reachable_via: str = Field(min_length=5)
+
+
+class ValidationPlan(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    rank: int = Field(ge=1)
+    name: str = Field(min_length=2)
+    # The prompt asks for 5-10 specific targets. min_length=3 is a soft
+    # floor that still fails clearly when Claude lists "CPAs" as a
+    # single target instead of naming firms.
+    specific_outreach_targets: list[ValidationOutreachTarget] = Field(
+        min_length=3, max_length=15
+    )
+    contact_channel: str = Field(min_length=5)
+    # Cold message anchor: 80-150 words in the prompt. Enforce a
+    # minimum character floor that roughly corresponds to 80 words
+    # (avg ~5 chars/word including spaces → ~400 chars). Cap at 1500
+    # to catch the "wall of text" failure mode.
+    cold_message_script: str = Field(min_length=300, max_length=1500)
+    disqualification_criteria: list[str] = Field(min_length=2, max_length=5)
+    go_no_go_metric: str = Field(min_length=15)
+    expected_signal_timeline: str = Field(min_length=40)
+
+
+class ValidationPlanResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    # Prompt asks for top 3. Allow 2-5 to absorb edge cases where
+    # synthesis surfaced exactly 3 but one was clearly weak, or where
+    # deep_research_mode produced 7 rankings and the top 5 all deserve
+    # a plan. Fewer than 2 means something went wrong upstream.
+    validation_plans: list[ValidationPlan] = Field(min_length=2, max_length=5)
+    cross_cutting_notes: str = Field(min_length=10)
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Side hustle pipeline schemas (Round 2)
 # ─────────────────────────────────────────────────────────────────────
 #
@@ -679,7 +774,9 @@ STEP_OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "startup_landscape_v1": LandscapeResult,
     "startup_deep_dive_v1": DeepDiveResult,
     "startup_contrarian_v1": ContrarianResult,
+    "startup_freshness_v1": FreshnessResult,
     "startup_synthesis_v1": SynthesisResult,
+    "startup_validation_v1": ValidationPlanResult,
     # Round 2 side hustle additions
     "side_hustle_research_v1": SideHustleResearchResult,
     "side_hustle_feasibility_v1": SideHustleFeasibilityResult,
