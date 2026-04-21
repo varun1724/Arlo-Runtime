@@ -223,9 +223,6 @@ class ContrarianResult(BaseModel):
 # Step 3: synthesis_and_ranking → SynthesisResult
 # ─────────────────────────────────────────────────────────────────────
 
-MoatRating = Literal["none", "weak", "strong"]
-
-
 class Scores(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -239,7 +236,12 @@ class Scores(BaseModel):
 class MoatDimension(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    rating: MoatRating
+    # Integer 1-10. Previously a Literal["none","weak","strong"] which
+    # capped defensibility at ~5 because the rubric flattened moderate
+    # and strong moats into the same "weak" bucket. The 1-10 scale lets
+    # a genuine distribution-lock or data-advantage moat score 7+ and
+    # drive defensibility (and therefore total_score) above 70.
+    rating: int = Field(ge=1, le=10)
     justification: str
 
 

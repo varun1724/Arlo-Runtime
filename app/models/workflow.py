@@ -127,6 +127,14 @@ class CreateWorkflowFromTemplateRequest(BaseModel):
     scope. Default is False — the normal pipeline is unchanged for
     API-billed users who pay per-token. Recommended ON for users with
     a Claude Max subscription where token cost is effectively zero."""
+    max_cost_usd: float | None = Field(default=None, gt=0)
+    """Abort the workflow before creating any step job whose start
+    would push total accumulated ``JobRow.estimated_cost_usd`` above
+    this cap. None (default) disables the cap. Intended as a safety
+    fence against runaway Opus loops or retry storms on expensive
+    steps. Stored in workflow context under the reserved key
+    ``_max_cost_usd`` so the cap persists across restarts without
+    needing a schema migration on ``WorkflowRow``."""
 
 
 class ApproveStepRequest(BaseModel):

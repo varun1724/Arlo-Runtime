@@ -127,6 +127,12 @@ async def create_workflow_from_template(
     if body.deep_research_mode:
         steps_raw, initial_context = _apply_deep_research_mode(steps_raw, initial_context)
 
+    # Cost cap: stash in context under a reserved key so advance_workflow
+    # can enforce before creating each new step job. Reserved keys are
+    # prefixed with underscore to avoid collision with user context.
+    if body.max_cost_usd is not None:
+        initial_context["_max_cost_usd"] = body.max_cost_usd
+
     request = CreateWorkflowRequest(
         name=template["name"],
         template_id=template_id,

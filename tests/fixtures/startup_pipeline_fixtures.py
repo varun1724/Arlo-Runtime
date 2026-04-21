@@ -483,7 +483,13 @@ INVALID_CONTRARIAN_BAD_KILL_PROB: dict = {
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _moats_block(rating: str = "weak") -> dict:
+def _moats_block(rating: int = 3) -> dict:
+    """Build a uniform moats block for fixtures.
+
+    Default rating is 3 ("weak" on the new 1-10 anchor), matching the
+    prior default. Tests that want to cover the full spectrum pass
+    explicit integers (1, 5, 7, 10).
+    """
     return {
         dim: {"rating": rating, "justification": "j"}
         for dim in (
@@ -511,11 +517,11 @@ def _rich_ranking(rank: int, name: str, one_liner: str, total: float) -> dict:
             "evidence_quality": 8,
         },
         "moats": {
-            "network_effects": {"rating": "none", "justification": "Test quality doesn't compound across users"},
-            "switching_costs": {"rating": "weak", "justification": "Generated tests live in the user's repo"},
-            "data_advantage": {"rating": "weak", "justification": "Could improve generation quality from anonymized usage"},
-            "brand_or_trust": {"rating": "weak", "justification": "Brand matters for code quality tools"},
-            "distribution_lock": {"rating": "none", "justification": "VS Code marketplace is competitive"},
+            "network_effects": {"rating": 1, "justification": "Test quality doesn't compound across users"},
+            "switching_costs": {"rating": 3, "justification": "Generated tests live in the user's repo"},
+            "data_advantage": {"rating": 3, "justification": "Could improve generation quality from anonymized usage"},
+            "brand_or_trust": {"rating": 3, "justification": "Brand matters for code quality tools"},
+            "distribution_lock": {"rating": 1, "justification": "VS Code marketplace is competitive"},
         },
         "total_score": total,
         "head_to_head": "Beats the next-ranked opportunity on solo-dev feasibility and revenue clarity.",

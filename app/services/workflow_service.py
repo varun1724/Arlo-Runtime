@@ -504,6 +504,71 @@ async def retry_step(session: AsyncSession, workflow_id: uuid.UUID) -> WorkflowR
     return workflow
 
 
+async def _check_cost_cap(
+    session: AsyncSession, workflow_id: uuid.UUID, context: dict
+) -> tuple[bool, float, float] | None:
+    """Enforce the per-workflow cost cap before a new step job is created.
+
+    Reads the cap from ``context["_max_cost_usd"]`` (injected at workflow
+    creation via the ``max_cost_usd`` field on
+    ``CreateWorkflowFromTemplateRequest``). If the cap is unset, returns
+    None — the caller should proceed without gating.
+
+    Returns ``(exceeded, spent_so_far, cap)`` when the cap IS set, where
+    ``exceeded`` is True iff the summed ``JobRow.estimated_cost_usd`` across
+    this workflow has already reached or passed the cap. Callers that
+    receive ``exceeded=True`` should mark the workflow failed rather than
+    creating the next job.
+
+    Only the cost that has *already been committed* counts — we can't
+    predict what the next Opus call will cost, so this is a post-hoc
+    circuit breaker, not a pre-flight estimate.
+    """
+    cap = context.get("_max_cost_usd")
+    if cap is None:
+        return None
+    try:
+        cap_f = float(cap)
+    except (TypeError, ValueError):
+        logger.warning("Workflow %s has non-numeric _max_cost_usd=%r; ignoring", workflow_id, cap)
+        return None
+
+    spent_result = await session.execute(
+        select(func.coalesce(func.sum(JobRow.estimated_cost_usd), 0.0))
+        .where(JobRow.workflow_id == workflow_id)
+    )
+    spent = float(spent_result.scalar_one() or 0.0)
+    return (spent >= cap_f, spent, cap_f)
+
+
+async def _abort_workflow_for_cost_cap(
+    session: AsyncSession, workflow_id: uuid.UUID, spent: float, cap: float
+) -> None:
+    """Fail the workflow because its committed cost has hit the cap."""
+    now = datetime.now(timezone.utc)
+    msg = (
+        f"Aborted: committed cost ${spent:.2f} reached the "
+        f"max_cost_usd cap of ${cap:.2f} before creating the next step. "
+        f"No further jobs will be queued."
+    )
+    await session.execute(
+        update(WorkflowRow)
+        .where(WorkflowRow.id == workflow_id)
+        .values(
+            status=WorkflowStatus.FAILED.value,
+            error_message=msg,
+            updated_at=now,
+            completed_at=now,
+        )
+    )
+    await session.commit()
+    logger.warning("Workflow %s aborted for cost cap (%s)", workflow_id, msg)
+    # Fire the standard failure notification — the operator cares just
+    # as much about a cap abort as about a Claude error.
+    from app.services import notifications
+    await notifications.notify(session, workflow_id, "workflow_failed")
+
+
 async def _create_step_job(
     session: AsyncSession,
     workflow_id: uuid.UUID,
@@ -519,7 +584,18 @@ async def _create_step_job(
     on steps that only need a subset of prior outputs (e.g. ``build_mvp``
     only needs ``synthesis``, not the full landscape/deep_dive/contrarian
     chain).
+
+    Before creating the job, the per-workflow cost cap (if configured)
+    is enforced: any call here that would queue a job after the cap has
+    been reached aborts the workflow instead of spending more tokens.
     """
+    cap_check = await _check_cost_cap(session, workflow_id, context)
+    if cap_check is not None:
+        exceeded, spent, cap = cap_check
+        if exceeded:
+            await _abort_workflow_for_cost_cap(session, workflow_id, spent, cap)
+            return
+
     render_context = _prune_context(context, step.context_inputs)
     prompt = _render_prompt(step.prompt_template, render_context)
 

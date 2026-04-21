@@ -395,7 +395,7 @@ STARTUP_IDEA_PIPELINE = {
                 "     5 = stable market, no obvious tailwind or headwind\n"
                 "     8 = clear timing signal in last 12 months (regulation, tech unlock, behavior shift)\n"
                 "     10 = inflection point happening RIGHT NOW with multiple converging signals\n\n"
-                "   defensibility (derived from the moats taxonomy below — see step 3)\n"
+                "   defensibility (DERIVED — do not score directly; see moat derivation in step 3)\n"
                 "     1 = pure commodity, anyone can clone in a weekend\n"
                 "     5 = some workflow lock-in or modest switching cost\n"
                 "     8 = real moat in at least one dimension (network, data, distribution)\n"
@@ -415,14 +415,31 @@ STARTUP_IDEA_PIPELINE = {
                 "     5 = a few cited sources, some demand signals\n"
                 "     8 = multiple independent sources, named competitors with funding, real demand\n"
                 "     10 = paying customers visibly complaining, multiple $10M+ funded competitors\n\n"
-                "3. For each surviving opportunity, build a MOATS taxonomy. Rate each moat type as "
-                "'none', 'weak', or 'strong' with a one-sentence justification. The defensibility "
-                "score above should be derived from this taxonomy:\n"
-                "   - network_effects: does value grow with more users?\n"
-                "   - switching_costs: how painful to leave once adopted?\n"
-                "   - data_advantage: does proprietary data improve the product over time?\n"
-                "   - brand_or_trust: does brand reputation create a buying preference?\n"
-                "   - distribution_lock: privileged access to a channel competitors can't reach?\n\n"
+                "3. For each surviving opportunity, build a MOATS taxonomy. Rate each moat "
+                "type on an integer 1-10 scale (NOT qualitative none/weak/strong) with a "
+                "one-sentence justification. Use these anchors:\n"
+                "   1 = none — commodity in this dimension, zero lock-in\n"
+                "   3 = weak — token friction, any competitor removes it in a week\n"
+                "   5 = moderate — workflow lock-in or modest switching cost\n"
+                "   7 = strong — real moat that takes months to replicate\n"
+                "   10 = durable — structurally hard to copy (regulatory license, exclusive\n"
+                "        distribution partnership, proprietary data flywheel with 12+ months\n"
+                "        of accumulated advantage, patented tech)\n\n"
+                "   Rate each of:\n"
+                "   - network_effects: does value grow with more users? (1-10)\n"
+                "   - switching_costs: how painful to leave once adopted? (1-10)\n"
+                "   - data_advantage: does proprietary data improve the product over time? (1-10)\n"
+                "   - brand_or_trust: does brand reputation create a buying preference? (1-10)\n"
+                "   - distribution_lock: privileged access to a channel competitors can't reach? (1-10)\n\n"
+                "   DEFENSIBILITY DERIVATION: set the defensibility dimension score (used in the\n"
+                "   total_score formula) as follows: take the TOP TWO moat ratings, average\n"
+                "   them, and round to the nearest integer. This rewards concentrated moat\n"
+                "   strength — having one strong moat (7) plus one moderate (5) averages to 6,\n"
+                "   which is the right signal for a genuinely defensible solo-dev play. Having\n"
+                "   five weak moats (all 3) averages to 3, correctly reflecting commodity risk.\n"
+                "   Do NOT default every moat to 3 out of conservatism; rate honestly against\n"
+                "   the anchors. A product with an exclusive association endorsement or a\n"
+                "   regulated-license buyer relationship genuinely scores 8+ on distribution_lock.\n\n"
                 "4. Compute a WEIGHTED total score on a 0-100 scale using these weights "
                 "for a solo dev (weights sum to 10.0, so max = 10 * 10 = 100):\n"
                 "   total_score = (solo_dev_feasibility * 3.0) + (revenue_potential * 3.0) + \n"
@@ -464,11 +481,11 @@ STARTUP_IDEA_PIPELINE = {
                 '        "evidence_quality": 7\n'
                 '      }},\n'
                 '      "moats": {{\n'
-                '        "network_effects": {{"rating": "none|weak|strong", "justification": "string"}},\n'
-                '        "switching_costs": {{"rating": "none|weak|strong", "justification": "string"}},\n'
-                '        "data_advantage": {{"rating": "none|weak|strong", "justification": "string"}},\n'
-                '        "brand_or_trust": {{"rating": "none|weak|strong", "justification": "string"}},\n'
-                '        "distribution_lock": {{"rating": "none|weak|strong", "justification": "string"}}\n'
+                '        "network_effects": {{"rating": 4, "justification": "string"}},\n'
+                '        "switching_costs": {{"rating": 6, "justification": "string"}},\n'
+                '        "data_advantage": {{"rating": 7, "justification": "string"}},\n'
+                '        "brand_or_trust": {{"rating": 3, "justification": "string"}},\n'
+                '        "distribution_lock": {{"rating": 8, "justification": "string"}}\n'
                 '      }},\n'
                 '      "total_score": 72.0,\n'
                 '      "head_to_head": "string — why this beats the next-ranked opportunity",\n'
@@ -494,7 +511,11 @@ STARTUP_IDEA_PIPELINE = {
             "timeout_override": 1200,
             "max_retries": 2,
             "output_schema": "startup_synthesis_v1",
-            "model_override": "claude-opus-4-7",
+            # Synthesis is aggregation + reasoning over ~150k tokens of
+            # already-researched output; it doesn't need Opus's raw depth.
+            # Sonnet follows instructions reliably on structured output at
+            # ~1/5 the input cost and ~1/5 the output cost.
+            "model_override": "claude-sonnet-4-6",
         },
         # ──────────────────────────────────────────────────
         # Step 4: User approval gate
