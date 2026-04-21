@@ -766,6 +766,15 @@ SIDE_HUSTLE_PIPELINE = {
                 "Skills: {skills}\n"
                 "Constraints: {constraints}\n"
                 "Deep research mode: {deep_mode}\n\n"
+                "KNOWN FACTS FROM PRIOR PIPELINE RUNS — read these first. They contain\n"
+                "regulatory dates, funded competitors, recent incumbent moves, and 'dead\n"
+                "playbook' patterns already learned from earlier runs across startup AND\n"
+                "side-hustle domains. Use them to (a) skip rediscovering the same facts\n"
+                "via web search, (b) avoid hustles that match a dead_playbooks pattern\n"
+                "(e.g., 'thin AI wrapper over QBO' won't survive here either), (c) weight\n"
+                "income_evidence and timing signals more accurately. If a fact applies to\n"
+                "your focus area, cite it by name in the relevant opportunity:\n"
+                "{known_facts}\n\n"
                 "DEEP RESEARCH MODE: If 'Deep research mode' is 'true', the user is on a "
                 "Claude Max subscription and wants a more thorough pass. Aim for 8-10 "
                 "opportunities (instead of 6-8), lean more heavily on contrarian sources, "
@@ -869,6 +878,7 @@ SIDE_HUSTLE_PIPELINE = {
             "timeout_override": 1800,
             "max_retries": 2,
             "output_schema": "side_hustle_research_v1",
+            "model_override": "claude-opus-4-7",
         },
         # ──────────────────────────────────────────────────
         # Step 1: Evaluate feasibility
@@ -987,6 +997,7 @@ SIDE_HUSTLE_PIPELINE = {
             "max_retries": 2,
             "output_schema": "side_hustle_feasibility_v1",
             "context_inputs": ["side_hustle_research"],
+            "model_override": "claude-opus-4-7",
         },
         # ──────────────────────────────────────────────────
         # Step 2: Contrarian analysis
@@ -1106,9 +1117,74 @@ SIDE_HUSTLE_PIPELINE = {
             "max_retries": 2,
             "output_schema": "side_hustle_contrarian_v1",
             "context_inputs": ["feasibility"],
+            "model_override": "claude-opus-4-7",
         },
         # ──────────────────────────────────────────────────
-        # Step 3: Synthesis and ranking
+        # Step 3: Freshness decay check (Batch D parity with startup)
+        # ──────────────────────────────────────────────────
+        # Runs a narrow 30-day news pass on surviving hustles. Side
+        # hustle categories are especially prone to "guru saturation"
+        # (a hustle getting blasted across YouTube/IH in the month between
+        # research and synthesis, collapsing margins) and to platform
+        # policy changes (API rate-limit bumps, ToS tightening) that
+        # invalidate the automation approach overnight.
+        {
+            "name": "freshness_check",
+            "job_type": "research",
+            "prompt_template": (
+                "You are a side-hustle analyst doing a final 30-day freshness pass on "
+                "hustles that survived contrarian review. Side-hustle categories go stale "
+                "fast — your job is to catch recent moves that would kill or weaken a "
+                "survivor BEFORE synthesis ranks it.\n\n"
+                "CONTRARIAN OUTPUT:\n{contrarian}\n\n"
+                "INSTRUCTIONS:\n"
+                "For EACH hustle with verdict 'survives' or 'weakened', use web search "
+                "restricted to the LAST 30 DAYS to check for:\n"
+                "1. GURU SATURATION — was this hustle featured in a viral YouTube short, "
+                "Twitter thread, or newsletter in the last 30 days? Saturation collapses "
+                "margins within weeks as imitators flood the channel.\n"
+                "2. PLATFORM POLICY CHANGES — did an API's ToS tighten, a rate limit drop, "
+                "pricing change, or a platform (Upwork, Fiverr, Reddit, Twitter/X, Meta) "
+                "restrict the automation pattern the hustle depends on?\n"
+                "3. NEW COMPETITORS — did a funded startup launch a product that replaces "
+                "this manual+n8n workflow with a turnkey SaaS? (e.g. a $29/mo tool that "
+                "does what you planned to charge $500/mo for)\n"
+                "4. REGULATORY MOVES — new FTC guidance on affiliate disclosure, new state "
+                "data-privacy rules, any piece that changes the legal_checklist from "
+                "feasibility.\n\n"
+                "CLASSIFY each hustle:\n"
+                "- STABLE: no material change in the last 30 days. Original verdict holds.\n"
+                "- WEAKENED_FURTHER: material move narrows the window but doesn't kill.\n"
+                "  Synthesis should deduct 5-10 points from its total_score.\n"
+                "- KILLED_POST_CONTRARIAN: recent move eliminates the hustle. Synthesis "
+                "  MUST drop this from final_rankings.\n\n"
+                "QUALITY RULES:\n"
+                "- Every non-STABLE classification MUST cite a specific URL + date. No "
+                "handwaving.\n"
+                "- Default to STABLE if you can't find specific 30-day evidence.\n\n"
+                "OUTPUT: Respond with ONLY valid JSON:\n"
+                '{{\n'
+                '  "freshness_results": [\n'
+                '    {{\n'
+                '      "name": "string — hustle name exactly as in contrarian",\n'
+                '      "status": "STABLE|WEAKENED_FURTHER|KILLED_POST_CONTRARIAN",\n'
+                '      "evidence": "string — source URL + date + one-sentence summary, or null if STABLE",\n'
+                '      "impact": "string — one sentence on how this changes the verdict"\n'
+                '    }}\n'
+                '  ],\n'
+                '  "scan_notes": "string — 1-2 sentences on what you searched and what you found overall"\n'
+                '}}'
+            ),
+            "output_key": "freshness",
+            "condition": {"field": "contrarian", "operator": "not_empty"},
+            "timeout_override": 900,
+            "max_retries": 1,
+            "output_schema": "startup_freshness_v1",
+            "context_inputs": ["contrarian"],
+            "model_override": "claude-opus-4-7",
+        },
+        # ──────────────────────────────────────────────────
+        # Step 4: Synthesis and ranking
         # ──────────────────────────────────────────────────
         {
             "name": "synthesis_and_ranking",
@@ -1120,6 +1196,7 @@ SIDE_HUSTLE_PIPELINE = {
                 "RESEARCH:\n{side_hustle_research}\n\n"
                 "FEASIBILITY:\n{feasibility}\n\n"
                 "CONTRARIAN:\n{contrarian}\n\n"
+                "FRESHNESS CHECK (last-30-day saturation + policy moves):\n{freshness}\n\n"
                 "Deep research mode: {deep_mode}\n\n"
                 "DEEP RESEARCH MODE: If 'Deep research mode' is 'true', the user is on Claude "
                 "Max. Rank up to 7 opportunities in final_rankings (instead of capping at 5), "
@@ -1127,8 +1204,10 @@ SIDE_HUSTLE_PIPELINE = {
                 "executive_summary should also be 3-4 paragraphs instead of 2-3, with explicit "
                 "comparison across the top 3 picks.\n\n"
                 "INSTRUCTIONS:\n\n"
-                "1. ONLY include opportunities with 'survives' or 'weakened' verdicts. "
-                "Drop everything that was 'killed' in the contrarian step.\n\n"
+                "1. Drop every hustle that either (a) got a 'killed' verdict in contrarian, "
+                "OR (b) was marked KILLED_POST_CONTRARIAN by the freshness check. Both are "
+                "equal-weight exclusion signals. Include only 'survives' or 'weakened' in "
+                "contrarian AND not KILLED_POST_CONTRARIAN in freshness.\n\n"
                 "2. WEIGHTED SCORING on a 0-100 scale — apply these weights to each "
                 "surviving opportunity's feasibility scores. Weights sum to 10.0 so the "
                 "weighted sum of six 1-10 dimensions maxes at 100. Solo operators care "
@@ -1146,6 +1225,11 @@ SIDE_HUSTLE_PIPELINE = {
                 "   total_score:\n"
                 "   - 'survives' verdict: total_score = raw_score\n"
                 "   - 'weakened' verdict: total_score = raw_score × 0.8\n\n"
+                "   FRESHNESS DEDUCTION: if the hustle was marked WEAKENED_FURTHER by the\n"
+                "   freshness check, deduct 5-10 additional points from total_score AFTER\n"
+                "   the contrarian adjustment (severity depends on how damaging the 30-day\n"
+                "   move was). Cite the deduction in head_to_head or surviving_risks. STABLE\n"
+                "   hustles get no freshness deduction.\n"
                 "   Do NOT inflate dimension scores to hit a target total — score each\n"
                 "   dimension honestly, then let the formula produce whatever total it\n"
                 "   produces. A realistic surviving opportunity typically lands 55-80.\n\n"
@@ -1221,10 +1305,92 @@ SIDE_HUSTLE_PIPELINE = {
             "timeout_override": 1800,
             "max_retries": 2,
             "output_schema": "side_hustle_synthesis_v1",
-            "context_inputs": ["side_hustle_research", "feasibility", "contrarian"],
+            "context_inputs": ["side_hustle_research", "feasibility", "contrarian", "freshness"],
+            # Synthesis is aggregation + scoring over already-researched
+            # output. Sonnet follows the formula reliably at ~1/5 the
+            # input cost vs Opus.
+            "model_override": "claude-sonnet-4-6",
         },
         # ──────────────────────────────────────────────────
-        # Step 4: User picks a hustle
+        # Step 5: Subscription pre-sale validation plan (Batch D)
+        # ──────────────────────────────────────────────────
+        # Side-hustle analogue of the startup validation_plan step. The
+        # synthesis produces a ranking; the actual next action is not
+        # "build the n8n workflow" but "confirm people will pay a
+        # recurring subscription for it." This step turns the top 3
+        # ranked hustles into a concrete pre-subscription playbook.
+        {
+            "name": "validation_plan",
+            "job_type": "research",
+            "prompt_template": (
+                "You are a GTM strategist producing a 3-week PRE-SUBSCRIPTION validation "
+                "plan for the top 3 ranked side hustles in the synthesis. The goal is to "
+                "confirm recurring paying demand BEFORE the operator wires the n8n workflow "
+                "— via paid beta, annual-plan deposits, or a founding-customer list.\n\n"
+                "SYNTHESIS:\n{synthesis}\n\n"
+                "For EACH of the top 3 ranked hustles, produce a validation plan with:\n\n"
+                "1. specific_outreach_targets: 5-10 NAMED communities, forums, subreddits, "
+                "Slack/Discord servers, or newsletter audiences where the target buyer "
+                "actually hangs out. For each, include:\n"
+                "   - name: community or channel name\n"
+                "   - why_them: one-sentence match against the hustle's buyer ICP\n"
+                "   - reachable_via: how you post or DM there without getting banned (e.g. "
+                "    'post in r/Entrepreneur weekly Monday thread, value-add first', "
+                "    'comment on IndieHackers revenue posts')\n"
+                "   Do NOT list 'small business owners' as a target — name specific communities.\n\n"
+                "2. contact_channel: the PRIMARY channel for outreach (Reddit subreddit, "
+                "Slack community, Twitter/X thread, newsletter DM, cold email).\n\n"
+                "3. cold_message_script: 80-150 word opener. Must:\n"
+                "   - Name the specific workflow pain from the feasibility research\n"
+                "   - Reference a named competitor pricing or a DIY solution people use today\n"
+                "   - End with a binary ask ('would you pay $X/mo if this existed before I "
+                "     built it?')\n"
+                "   - NOT start with 'Hi, hope you're well' or any generic greeting.\n\n"
+                "4. disqualification_criteria: 3 specific conditions that should make the "
+                "operator DROP this hustle. Each must be a testable fact, e.g. 'fewer than "
+                "5 DMs reply in 7 days' or 'nobody agrees to $49/mo annual pre-pay.'\n\n"
+                "5. go_no_go_metric: the SINGLE subscription-count threshold at end-of-week-3 "
+                "that triggers build-or-drop. Format: '≥N paying subscribers at $X/mo, else "
+                "drop.' Example: '≥5 founding customers at $99/mo annual pre-pay, else drop.'\n\n"
+                "6. expected_signal_timeline: 3-4 short sentences on what you expect by end "
+                "of week 1, week 2, and week 3. Ground in realistic reply rates (cold DM "
+                "~5-10%, community post ~20-40% engagement-rate).\n\n"
+                "QUALITY RULES:\n"
+                "- No handwaving. 'Reach out in Facebook groups' is not acceptable. 'Post a "
+                "weekly value-add in these 7 named groups' is.\n"
+                "- Every pre-sale ask must be a concrete dollar amount AND cadence "
+                "(monthly or annual pre-pay).\n"
+                "- The go_no_go_metric must be binary — not 'get positive feedback.'\n\n"
+                "OUTPUT: Respond with ONLY valid JSON:\n"
+                '{{\n'
+                '  "validation_plans": [\n'
+                '    {{\n'
+                '      "rank": 1,\n'
+                '      "name": "string — must match a name from synthesis.final_rankings",\n'
+                '      "specific_outreach_targets": [\n'
+                '        {{"name": "string", "why_them": "string", "reachable_via": "string"}}\n'
+                '      ],\n'
+                '      "contact_channel": "string",\n'
+                '      "cold_message_script": "string — 80-150 words",\n'
+                '      "disqualification_criteria": ["string — testable fact"],\n'
+                '      "go_no_go_metric": "string — binary subscriber-count threshold",\n'
+                '      "expected_signal_timeline": "string — week-by-week expectations"\n'
+                '    }}\n'
+                '  ],\n'
+                '  "cross_cutting_notes": "string — 1-2 sentences on anything the operator '
+                'should know before starting all three validations in parallel"\n'
+                '}}'
+            ),
+            "output_key": "validation_plans",
+            "condition": {"field": "synthesis", "operator": "not_empty"},
+            "timeout_override": 900,
+            "max_retries": 1,
+            "output_schema": "startup_validation_v1",
+            "context_inputs": ["synthesis"],
+            "model_override": "claude-sonnet-4-6",
+        },
+        # ──────────────────────────────────────────────────
+        # Step 6: User picks a hustle
         # ──────────────────────────────────────────────────
         {
             "name": "user_picks_hustle",
@@ -1334,13 +1500,16 @@ SIDE_HUSTLE_PIPELINE = {
             ),
             "output_key": "deploy_result",
             "condition": {"field": "build_result", "operator": "not_empty"},
-            # Round 6 followup: activation validation loop. If n8n
-            # rejects activation (e.g. "Node X: missing required
-            # parameters"), the executor stores the error in
+            # Round 6 followup (Batch D updated): activation validation
+            # loop. If n8n rejects activation (e.g. "Node X: missing
+            # required parameters"), the executor stores the error in
             # deploy_result instead of failing the job. This loop
-            # sends the workflow back to build_n8n_workflow (step 5)
-            # so Claude can fix the flagged nodes. Max 3 total builds.
-            "loop_to": 5,
+            # sends the workflow back to build_n8n_workflow so Claude
+            # can fix the flagged nodes. Max 3 total builds.
+            #
+            # Batch D: build_n8n_workflow moved from step 5 to step 7
+            # after inserting freshness_check and validation_plan.
+            "loop_to": 7,
             "max_loop_count": 3,
             "loop_condition": {
                 "field": "deploy_result",
@@ -1349,7 +1518,7 @@ SIDE_HUSTLE_PIPELINE = {
             },
         },
         # ──────────────────────────────────────────────────
-        # Step 7: Test run (approval-gated)
+        # Step 9: Test run (approval-gated)
         # ──────────────────────────────────────────────────
         # Round 4: same static-JSON pattern as the deploy step. The
         # executor reads webhook_url + n8n_workflow_id from the
