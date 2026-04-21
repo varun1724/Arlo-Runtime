@@ -142,7 +142,7 @@ async def execute_builder_job(session: AsyncSession, job: JobRow) -> None:
         # of the common README/BUILD_DECISIONS pair. Falls back to the
         # module-level default when the step doesn't specify one.
         required: tuple[str, ...] = REQUIRED_BUILDER_ARTIFACTS
-        if step is not None and step.required_artifacts:
+        if step is not None and step.required_artifacts is not None:
             required = tuple(step.required_artifacts)
         missing = _check_required_artifacts(workspace_path, required=required)
         if missing:

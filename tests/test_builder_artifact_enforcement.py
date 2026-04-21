@@ -99,6 +99,30 @@ def test_build_mvp_step_has_max_retries_set():
     assert sd.max_retries >= 1
 
 
+def test_empty_required_artifacts_is_explicit_no_artifacts():
+    """A step that sets ``required_artifacts=[]`` opts out of ALL artifact
+    enforcement — including the module-level README/BUILD_DECISIONS default.
+
+    The previous truthiness check (``if step.required_artifacts:``) treated
+    ``[]`` as "not specified" and silently fell back to the default, making
+    it impossible for a builder step to legitimately require zero files.
+    The None-check lets callers distinguish "unset" from "explicitly empty".
+    """
+    from app.models.workflow import StepDefinition
+
+    step = StepDefinition(
+        name="build_thing",
+        job_type="builder",
+        prompt_template="build",
+        output_key="result",
+        required_artifacts=[],
+    )
+    # An empty list must round-trip as an empty list, not None, so the
+    # builder can distinguish "no override" from "override to nothing".
+    assert step.required_artifacts == []
+    assert step.required_artifacts is not None
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Round 4: focused assertion that missing artifacts raise the right exception
 # ─────────────────────────────────────────────────────────────────────

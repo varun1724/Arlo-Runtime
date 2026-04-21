@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -27,6 +28,13 @@ _MODEL_PRICES_USD_PER_MTOK: dict[str, tuple[float, float]] = {
     "opus": (15.00, 75.00),
 }
 _DEFAULT_PRICE = (3.00, 15.00)  # assume sonnet if model is unknown
+
+# Match the family token in Anthropic's canonical ``claude-<family>-<gen>``
+# naming (e.g. ``claude-opus-4-7``, ``claude-sonnet-4-6``). Anchoring on
+# ``claude-`` and requiring ``-`` or end-of-string after the family avoids
+# mis-pricing hypothetical future IDs that carry a second family token in
+# a suffix (e.g. ``claude-opus-5-sonnet-preview`` — opus, not sonnet).
+_MODEL_FAMILY_RE = re.compile(r"claude-(haiku|sonnet|opus)(?:-|$)")
 
 
 def _safe_int(value) -> int | None:
@@ -86,10 +94,9 @@ def extract_usage(claude_output: dict[str, Any]) -> dict[str, int | float | None
             if isinstance(claude_output, dict) else None
         )
         if isinstance(model_field, str):
-            for key, price in _MODEL_PRICES_USD_PER_MTOK.items():
-                if key in model_field.lower():
-                    model_key = price
-                    break
+            match = _MODEL_FAMILY_RE.search(model_field.lower())
+            if match:
+                model_key = _MODEL_PRICES_USD_PER_MTOK[match.group(1)]
         in_price, out_price = model_key
         cost = round(
             (input_tokens / 1_000_000) * in_price + (output_tokens / 1_000_000) * out_price,

@@ -342,6 +342,49 @@ def test_extract_usage_garbage_token_values_returns_none():
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Model-family pricing: exact-family regex match instead of loose
+# substring scan over the price dict. Protects against hypothetical
+# future IDs that carry a second family token in a suffix, and against
+# dict-iteration-order ambiguity.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _cost(model: str, input_tokens: int = 1_000_000, output_tokens: int = 0) -> float:
+    from app.services.claude_runner import extract_usage
+    return extract_usage({
+        "model": model,
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+    })["estimated_cost_usd"]
+
+
+def test_pricing_matches_opus_4_7_by_family_token():
+    assert _cost("claude-opus-4-7") == 15.00  # opus: $15/M input
+
+
+def test_pricing_matches_sonnet_4_6_by_family_token():
+    assert _cost("claude-sonnet-4-6") == 3.00  # sonnet: $3/M input
+
+
+def test_pricing_matches_haiku_by_family_token():
+    assert _cost("claude-haiku-4-5-20251001") == 0.80  # haiku: $0.80/M input
+
+
+def test_pricing_uses_family_token_not_suffix_substring():
+    """If a hypothetical future ID carries a second family word in a suffix
+    (e.g. ``claude-opus-5-sonnet-preview``), the cost must be opus-priced
+    because that's the declared family. The prior substring scan would
+    mis-match ``sonnet`` first due to dict-insertion order.
+    """
+    assert _cost("claude-opus-5-sonnet-preview") == 15.00
+
+
+def test_pricing_falls_back_to_default_for_unknown_model():
+    """Unknown / non-Anthropic IDs should fall back to the default
+    (sonnet) price rather than silently 0-out."""
+    assert _cost("some-random-model") == 3.00
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Round 5.5: _extract_json_payload — Claude preamble tolerance
 # ─────────────────────────────────────────────────────────────────────
 
