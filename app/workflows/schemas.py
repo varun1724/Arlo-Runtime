@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ─────────────────────────────────────────────────────────────────────
 # Step 0: landscape_scan → LandscapeResult
@@ -243,6 +243,19 @@ class MoatDimension(BaseModel):
     # drive defensibility (and therefore total_score) above 70.
     rating: int = Field(ge=1, le=10)
     justification: str
+
+    # Backward-compat: in-flight workflows whose prompt_template was
+    # baked in under the old qualitative rubric will emit "none" / "weak"
+    # / "strong". Map them to the corresponding integers on validation
+    # so those runs still pass. Remove this coercion once all in-flight
+    # workflows have drained (search for "MOAT_STRING_COMPAT" to find).
+    @field_validator("rating", mode="before")
+    @classmethod
+    def _coerce_legacy_string_rating(cls, v):
+        if isinstance(v, str):
+            legacy_map = {"none": 1, "weak": 3, "strong": 7}
+            return legacy_map.get(v.strip().lower(), v)
+        return v
 
 
 class Moats(BaseModel):
