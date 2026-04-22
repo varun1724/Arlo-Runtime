@@ -79,13 +79,15 @@ NoCompetitorsClassification = Literal[
 
 DemandTier = Literal["HOT", "WARM", "COLD"]
 
-BillingModel = Literal[
-    "subscription",
-    "usage",
-    "one_time",
-    "freemium",
-    "marketplace_take",
-]
+# Used to be a Literal enum constrained to software billing models
+# (subscription / usage / one_time / freemium / marketplace_take). That
+# enum rejected valid non-software values like "wholesale", "retail_dtc",
+# "retainer", "commission", "hardware_sale" — which broke every attempt
+# to run the pipeline on a CPG, service, or capex-heavy domain. The
+# prompt still lists the canonical software values as suggested
+# vocabulary; the schema now accepts any short string so Claude can
+# emit the shape of whatever domain it's actually researching.
+BillingModel = str
 
 GrossMarginSignal = Literal["high", "medium", "low"]
 
@@ -122,7 +124,7 @@ class UnitEconomics(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     typical_price_point: str
-    billing_model: BillingModel
+    billing_model: str = Field(min_length=3, max_length=50)
     cac_channel: str
     gross_margin_signal: GrossMarginSignal
 

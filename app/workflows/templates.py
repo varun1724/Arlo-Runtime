@@ -228,7 +228,13 @@ STARTUP_IDEA_PIPELINE = {
                 "   d) UNIT ECONOMICS: Build a structured economics estimate (don't just say 'pricing\n"
                 "      varies'). For each opportunity, estimate:\n"
                 "      - typical_price_point: e.g. '$29-99/month', '$0.10/API call', '$2000 one-time'\n"
-                "      - billing_model: subscription | usage | one_time | freemium | marketplace_take\n"
+                "      - billing_model: a short snake_case label for how money changes hands.\n"
+                "        Prefer one of the canonical software values when they fit (subscription,\n"
+                "        usage, one_time, freemium, marketplace_take). For non-software domains,\n"
+                "        emit whichever label is accurate for that business — common examples:\n"
+                "        wholesale, retail_dtc, retainer, project_based, hourly, commission,\n"
+                "        hardware_sale, licensing, lease. Pick the one that matches reality,\n"
+                "        don't force a software label on a CPG or services opportunity.\n"
                 "      - cac_channel: most likely customer acquisition channel (SEO, cold outbound,\n"
                 "        partnerships, communities, paid ads, viral). Be specific.\n"
                 "      - gross_margin_signal: high (>80%, pure software) | medium (50-80%, has API\n"
@@ -268,7 +274,7 @@ STARTUP_IDEA_PIPELINE = {
                 '      ],\n'
                 '      "unit_economics": {{\n'
                 '        "typical_price_point": "string",\n'
-                '        "billing_model": "subscription|usage|one_time|freemium|marketplace_take",\n'
+                '        "billing_model": "string — e.g. subscription, wholesale, retainer, one_time, hardware_sale, licensing",\n'
                 '        "cac_channel": "string — specific channel",\n'
                 '        "gross_margin_signal": "high|medium|low"\n'
                 '      }},\n'
