@@ -522,23 +522,18 @@ class SideHustleResearchResult(BaseModel):
 # ─────────────────────────────────────────────────────────────────────
 
 
-N8nNodeAvailability = Literal[
-    "built_in",
-    "first_party",
-    "community_package",
-    "custom_code",
-]
-
-
-LegalComplianceCategory = Literal[
-    "PLATFORM_TOS",
-    "CFAA",
-    "FTC_AFFILIATE",
-    "CAN_SPAM",
-    "GDPR",
-    "STATE_BUSINESS_LICENSE",
-    "TAX_THRESHOLD",
-]
+# Same rationale as BillingModel: these enums rejected valid labels
+# the moment the pipeline ran outside its original SaaS/consumer-n8n
+# sweet spot. N8nNodeAvailability broke on a specialty-food-distributor
+# run when Claude classified a node as "community" / "third_party" /
+# "paid_add_on" instead of the 4 canonical buckets. LegalComplianceCategory
+# was built for consumer-side-hustle TOS/CFAA/FTC/GDPR, but
+# food-distribution sits squarely on FDA_LABELING / HACCP / USDA_MEAT /
+# ALLERGEN_DISCLOSURE, and insurance sits on STATE_INSURANCE_LICENSE /
+# RESPA / TCPA. Both now accept any short string; the prompts still
+# document the canonical vocabulary as soft guidance.
+N8nNodeAvailability = str
+LegalComplianceCategory = str
 
 
 class SideHustleScores(BaseModel):
@@ -562,7 +557,7 @@ class N8nNodeInventoryEntry(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     node: str = Field(min_length=3)
-    availability: N8nNodeAvailability
+    availability: str = Field(min_length=3, max_length=50)
     notes: str | None = None
 
 
