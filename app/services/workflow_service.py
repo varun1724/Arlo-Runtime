@@ -466,17 +466,29 @@ async def approve_step(
 
 
 async def retry_step(session: AsyncSession, workflow_id: uuid.UUID) -> WorkflowRow:
-    """Retry the current failed step of a workflow.
+    """Retry (or resume) the current step of a workflow.
 
-    Only works when workflow status is 'failed'. Creates a new job for
-    the failed step and sets workflow back to 'running'.
+    Accepts workflows in ``failed`` (classic retry) or ``canceled``
+    (pause-then-resume) status. In both cases, creates a new job for
+    the workflow's ``current_step_index`` with all prior upstream
+    context preserved, and sets the workflow back to ``running``.
+
+    Using cancel + retry as a pause/resume mechanism:
+      1. POST /{id}/cancel  — kills running Claude subprocesses, stops
+         further jobs, workflow frozen at its current_step_index.
+      2. POST /{id}/retry later — creates a fresh job for that step,
+         upstream context unchanged.
     """
     workflow = await session.get(WorkflowRow, workflow_id)
     if workflow is None:
         raise ValueError(f"Workflow {workflow_id} not found")
 
-    if workflow.status != WorkflowStatus.FAILED.value:
-        raise ValueError(f"Workflow {workflow_id} is not failed (status={workflow.status})")
+    resumable = {WorkflowStatus.FAILED.value, WorkflowStatus.CANCELED.value}
+    if workflow.status not in resumable:
+        raise ValueError(
+            f"Workflow {workflow_id} cannot be retried "
+            f"(status={workflow.status}; expected one of {sorted(resumable)})"
+        )
 
     step_defs = [StepDefinition.model_validate(s) for s in json.loads(workflow.step_definitions)]
     context = json.loads(workflow.context)
