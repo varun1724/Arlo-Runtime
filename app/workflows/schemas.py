@@ -355,9 +355,14 @@ class FreshnessResultEntry(BaseModel):
 class FreshnessResult(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    # At least one survivor was checked — otherwise the whole pipeline
-    # should have caught "everything killed" upstream in contrarian.
-    freshness_results: list[FreshnessResultEntry] = Field(min_length=1)
+    # Empty allowed: when contrarian's recovery loop is exhausted and
+    # zero opportunities survived, freshness has nothing to scan and
+    # should emit `[]` plus an explanatory scan_notes rather than
+    # failing schema validation. Synthesis's existing min_length=3 on
+    # final_rankings handles the "no viable wedge" terminal case
+    # downstream, surfacing it as a clear synthesis failure with the
+    # error message rather than a confusing freshness validation error.
+    freshness_results: list[FreshnessResultEntry] = Field(default_factory=list)
     scan_notes: str = Field(min_length=10)
 
 

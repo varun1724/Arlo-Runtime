@@ -50,16 +50,13 @@ async def create_workflow(
     await session.commit()
     await session.refresh(row)
 
-    # Create the first job
+    # Create the first job through _create_step_job so the cost-cap
+    # check (and any future pre-job hooks) apply uniformly to step 0.
+    # Previously this called create_job() directly, bypassing
+    # _check_cost_cap — a workflow with a very low max_cost_usd would
+    # still spend on step 0 before the cap kicked in on step 1.
     first_step = request.steps[0]
-    context = request.initial_context
-    prompt = _render_prompt(first_step.prompt_template, context)
-
-    job_request = CreateJobRequest(
-        job_type=JobType(first_step.job_type),
-        prompt=prompt,
-    )
-    await create_job(session, job_request, workflow_id=row.id, step_index=0)
+    await _create_step_job(session, row.id, 0, first_step, request.initial_context)
 
     logger.info("Created workflow %s (%s) with %d steps", row.id, row.name, len(request.steps))
     return row
@@ -406,60 +403,32 @@ async def approve_step(
         await _create_step_job(session, workflow_id, current_index, current_step, context)
         logger.info("Workflow %s: step %d approved, resuming", workflow_id, current_index)
     else:
-        # Skip this step, try to advance
-        next_index = current_index + 1
-
-        # Skip any further steps whose conditions fail
-        while next_index < len(step_defs):
-            next_step = step_defs[next_index]
-            if next_step.condition is None or _evaluate_condition(next_step.condition, context):
-                break
-            next_index += 1
-
-        if next_index >= len(step_defs):
-            # Workflow done
-            now = datetime.now(timezone.utc)
-            await session.execute(
-                update(WorkflowRow)
-                .where(WorkflowRow.id == workflow_id)
-                .values(
-                    status=WorkflowStatus.SUCCEEDED.value,
-                    context=json.dumps(context),
-                    updated_at=now,
-                    completed_at=now,
-                )
+        # approved=False means "user reviewed the synthesis and chose not
+        # to build". Terminate the workflow cleanly — DO NOT advance into
+        # any downstream builder/n8n step. The prior implementation
+        # advanced to next_index and created the next step's job; for
+        # the startup pipeline that meant build_mvp (whose condition
+        # `synthesis: not_empty` is satisfied), and the user got an
+        # unwanted MVP build despite clicking "skip" in the approval
+        # email. The intent of approved=False is "stop here," not "skip
+        # this step but continue."
+        now = datetime.now(timezone.utc)
+        await session.execute(
+            update(WorkflowRow)
+            .where(WorkflowRow.id == workflow_id)
+            .values(
+                status=WorkflowStatus.SUCCEEDED.value,
+                context=json.dumps(context),
+                updated_at=now,
+                completed_at=now,
             )
-            await session.commit()
-            logger.info("Workflow %s: step skipped, workflow completed", workflow_id)
-        else:
-            next_step = step_defs[next_index]
-            if next_step.requires_approval:
-                await session.execute(
-                    update(WorkflowRow)
-                    .where(WorkflowRow.id == workflow_id)
-                    .values(
-                        status=WorkflowStatus.AWAITING_APPROVAL.value,
-                        context=json.dumps(context),
-                        current_step_index=next_index,
-                        updated_at=datetime.now(timezone.utc),
-                    )
-                )
-                await session.commit()
-                logger.info("Workflow %s: skipped to step %d, also requires approval", workflow_id, next_index)
-            else:
-                await session.execute(
-                    update(WorkflowRow)
-                    .where(WorkflowRow.id == workflow_id)
-                    .values(
-                        status=WorkflowStatus.RUNNING.value,
-                        context=json.dumps(context),
-                        current_step_index=next_index,
-                        updated_at=datetime.now(timezone.utc),
-                    )
-                )
-                await session.commit()
-                await _create_step_job(session, workflow_id, next_index, next_step, context)
-                logger.info("Workflow %s: step skipped, advanced to step %d", workflow_id, next_index)
+        )
+        await session.commit()
+        logger.info(
+            "Workflow %s: approval declined at step %d, terminating without "
+            "building downstream steps",
+            workflow_id, current_index,
+        )
 
     await session.refresh(workflow)
     return workflow
