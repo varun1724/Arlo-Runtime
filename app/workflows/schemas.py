@@ -773,20 +773,34 @@ class SideHustleSynthesisResult(BaseModel):
 # ─────────────────────────────────────────────────────────────────────
 
 ApartmentSource = Literal[
+    # Primary Tier 1 sources (proven WebFetch)
     "craigslist",
     "redfin",
     "zumper",
     "padmapper",
-    "reddit",
-    # Retained for backward-compat with old workflow rows; the current
-    # prompt no longer attempts these because they hard-block the
-    # WebFetch tool (probed empirically on 2026-05-10).
+    # Direct landlord / property mgmt (Tier 2)
+    "avalonbay",
+    "equity_residential",
+    "camden",
+    "greystar",
+    "udr",
+    "vanguard",
+    "climb",
+    "compass",
+    # Alt aggregators (Tier 3)
+    "rentjungle",
+    "forrent",
+    "realtor_com",
+    "lovely",
+    # WebSearch-only / community (Tier 4-5)
     "hotpads",
     "zillow",
     "apartments_com",
     "trulia",
     "rent_com",
     "streeteasy",
+    "reddit",
+    "twitter",
     "facebook_marketplace",
     "other",
 ]
@@ -890,7 +904,15 @@ class ApartmentSynthesisResult(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     top_matches: list[ApartmentListing] = Field(default_factory=list, max_length=40)
-    sources_scanned: list[ApartmentSource] = Field(min_length=2)
+    # sources_scanned is purely informational (shown in scan_summary
+    # display). Was originally typed list[ApartmentSource] but that
+    # caused workflow failures the moment Claude tried a source we
+    # hadn't yet added to the Literal enum (e.g., overnight iteration
+    # added avalonbay/rentjungle/etc. via the prompt but forgot the
+    # schema update). Free-form str is safer — the actual gate on
+    # emitted listings is ApartmentListing.source, which stays
+    # constrained for iOS rendering.
+    sources_scanned: list[str] = Field(min_length=1)
     scan_summary: str = Field(min_length=20)
 
 
