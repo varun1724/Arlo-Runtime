@@ -26,8 +26,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.db.models import ApartmentListingRow, WorkflowRow
-from app.models.job import JobStatus, JobStopReason, JobRow
+from app.db.models import ApartmentListingRow, JobRow, WorkflowRow
+from app.models.job import JobStatus, JobStopReason
 from app.services import email_sender, report_renderer
 from app.services.job_service import finalize_job, update_job_progress
 
