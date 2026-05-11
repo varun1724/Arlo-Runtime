@@ -75,6 +75,49 @@ def _apply_deep_research_mode(
     return new_steps, new_context
 
 
+# Default search criteria for the apartment_search pipeline. Used when
+# the trigger (e.g. a Windows Task Scheduler shell script) does not
+# explicitly pass them — the prompt template hard-depends on each of
+# these placeholders being filled. Without defaults the renderer
+# would interpolate "{unknown}" into a hard filter (e.g.
+# "Available for move-in between {unknown}") and degrade the scan.
+_APARTMENT_SEARCH_DEFAULTS: dict = {
+    "max_rent_usd": 5200,
+    "min_bedrooms": 2,
+    "min_baths": 1,
+    "min_sqft": 700,
+    "max_bike_time_min": 30,
+    "soft_max_bike_time_min": 28,
+    "work_address": "6240 3rd St, San Francisco, CA",
+    "target_neighborhoods": (
+        "Mission, Polk Gulch, Nob Hill, Russian Hill, Pacific Heights, North Beach"
+    ),
+    "move_in_window": "mid June 2026 to early July 2026",
+    "user_persona": (
+        "22-year-old software engineer working near Oracle Park; living with one "
+        "roommate; wants young-professional friendly neighborhood, bikeable "
+        "commute, walkable grocery + gym."
+    ),
+    "preferences": (
+        "Rooftop access, in-unit laundry, dishwasher, walkable nightlife "
+        "(Friday/Saturday bars), basketball court or YMCA nearby, 2 baths preferred "
+        "but 1 is acceptable."
+    ),
+}
+
+
+def apply_apartment_search_defaults(initial_context: dict) -> dict:
+    """Merge in defaults for any apartment_search criteria the caller
+    didn't supply. User-provided values always win.
+
+    Called from ``create_workflow_from_template`` for the
+    ``apartment_search`` template so the recurring-scan trigger
+    script can just POST an empty body and still get a well-formed
+    prompt."""
+    merged = {**_APARTMENT_SEARCH_DEFAULTS, **initial_context}
+    return merged
+
+
 STARTUP_IDEA_PIPELINE = {
     "template_id": "startup_idea_pipeline",
     "name": "Startup Idea Pipeline (Deep Research)",
@@ -2052,9 +2095,165 @@ STRATEGY_EVOLUTION_PIPELINE = {
     ],
 }
 
+# ──────────────────────────────────────────────────────────────────────
+# Apartment search pipeline
+# ──────────────────────────────────────────────────────────────────────
+#
+# A recurring scan: WebFetch rental sites, score against the user's
+# fixed criteria, persist ranked listings to apartment_listings, email
+# on new high-score matches.
+#
+# Designed to be triggered on a schedule (e.g. Windows Task Scheduler
+# calling scripts/run_apartment_scan.sh twice daily). NOT
+# approval-gated — deliberately omitted from the 6 notification
+# dispatch dicts. The persist step sends its own notification email
+# directly via email_sender when new notify_worthy matches appear.
+
+APARTMENT_SEARCH_PIPELINE = {
+    "template_id": "apartment_search",
+    "name": "SF Apartment Search",
+    "description": "Scan rental sites → score listings against criteria → persist + notify on new matches",
+    "required_context": [],
+    "optional_context": [
+        "max_rent_usd",
+        "min_bedrooms",
+        "min_baths",
+        "min_sqft",
+        "target_neighborhoods",
+        "work_address",
+        "max_bike_time_min",
+        "soft_max_bike_time_min",
+        "move_in_window",
+        "preferences",
+        "user_persona",
+    ],
+    "steps": [
+        # ──────────────────────────────────────────────────
+        # Step 0: scan + rank in one pass
+        # ──────────────────────────────────────────────────
+        {
+            "name": "scan_and_rank",
+            "job_type": "research",
+            "prompt_template": (
+                "You are a San Francisco apartment hunter for a 22-year-old "
+                "software engineer. Find current 2BR rental listings that fit "
+                "the criteria below. Use WebFetch and WebSearch on the rental "
+                "sources listed. Today's date is the date of this run — only "
+                "include listings posted within the last 30 days.\n\n"
+                "HARD REQUIREMENTS (drop any listing that fails one):\n"
+                "- 2 bedrooms (min {min_bedrooms})\n"
+                "- {min_baths}+ bathrooms\n"
+                "- Has a kitchen (drop SROs / kitchenless studios)\n"
+                "- Monthly rent <= ${max_rent_usd} (this is a soft cap; an "
+                "exceptional listing 5-10% over is allowed, but flag it)\n"
+                "- {min_sqft}+ sqft when sqft is listed (when sqft is not "
+                "listed, infer from photos / description; if clearly small, "
+                "drop)\n"
+                "- Available for move-in between {move_in_window}\n"
+                "- 12-month lease available\n"
+                "- Bike commute to {work_address} within {soft_max_bike_time_min} "
+                "minutes (estimate — Pacific Heights center is ~26 min as "
+                "calibration). Hard cap on the soft-max: drop anything over "
+                "{max_bike_time_min}.\n\n"
+                "TARGET NEIGHBORHOODS (only consider listings in these):\n"
+                "{target_neighborhoods}\n\n"
+                "USER CONTEXT:\n"
+                "{user_persona}\n\n"
+                "ADDITIONAL PREFERENCES (nice-to-haves, not filters):\n"
+                "{preferences}\n\n"
+                "SOURCES — use WebFetch on each. If a source 403s or returns "
+                "no content, note it in scan_summary and continue with the "
+                "others. Do not fabricate listings if a source fails.\n"
+                "  - Craigslist: https://sfbay.craigslist.org/search/sfc/apa "
+                "?max_price={max_rent_usd}&min_bedrooms={min_bedrooms}\n"
+                "  - HotPads: https://hotpads.com/san-francisco-ca/apartments-for-rent"
+                "?bedsMin={min_bedrooms}&priceMax={max_rent_usd}\n"
+                "  - Padmapper: https://www.padmapper.com/apartments/san-francisco-ca"
+                "?bedrooms={min_bedrooms}&maximum-price={max_rent_usd}\n"
+                "  - Zillow Rentals: https://www.zillow.com/homes/for_rent/"
+                "San-Francisco-CA/?beds={min_bedrooms}&price={max_rent_usd}\n"
+                "  - Apartments.com: https://www.apartments.com/san-francisco-ca/"
+                "{min_bedrooms}-bedrooms-under-{max_rent_usd}/\n\n"
+                "SCORING — 0-100 per dimension; total_score = weighted sum:\n"
+                "  neighborhood (weight 0.25): how desirable for the persona. "
+                "Mission / Polk Gulch / Nob Hill = 100; Russian Hill / Pacific "
+                "Heights / North Beach = 85-90; anything outside the target "
+                "list = 0 (and should already be dropped).\n"
+                "  bike_time (weight 0.20): 100 at <=15 min, 70 at 25 min, "
+                "50 at 28 min, 0 over 30 min.\n"
+                "  value (weight 0.15): rent vs sqft and rent vs neighborhood "
+                "median. $/sqft below neighborhood median = 100.\n"
+                "  size (weight 0.10): 700 sqft = 50, 900+ = 80, 1100+ = 100.\n"
+                "  amenities (weight 0.15): in-unit W/D, dishwasher, "
+                "rooftop, gym in building, parking, walkable grocery (<5 min), "
+                "walkable gym, basketball court / Y nearby. Each yes = ~12 "
+                "points.\n"
+                "  vibe (weight 0.15): young-professional friendliness, "
+                "nightlife walkability, Friday/Saturday bar scene density.\n\n"
+                "MARK notify_worthy=true ONLY when total score >= 80 AND every "
+                "hard requirement is met. The notification email only "
+                "surfaces these.\n\n"
+                "OUTPUT FORMAT — respond with ONLY this JSON. Up to 25 "
+                "top_matches (sorted desc by score). If a source returned no "
+                "valid listings, list it in sources_scanned anyway so the "
+                "user knows what was tried.\n"
+                '{{\n'
+                '  "top_matches": [\n'
+                '    {{\n'
+                '      "source": "craigslist|hotpads|padmapper|zillow|apartments_com|trulia|rent_com|streeteasy|redfin|facebook_marketplace|other",\n'
+                '      "url": "string — the canonical listing URL",\n'
+                '      "title": "string — listing headline",\n'
+                '      "neighborhood": "Mission|Polk Gulch|Nob Hill|Russian Hill|Pacific Heights|North Beach",\n'
+                '      "address": "string — street address if visible",\n'
+                '      "rent_usd": 4800,\n'
+                '      "beds": 2,\n'
+                '      "baths": 1.0,\n'
+                '      "sqft": 850,\n'
+                '      "bike_time_min": 18,\n'
+                '      "score": 87.5,\n'
+                '      "score_breakdown": {{\n'
+                '        "neighborhood": 95, "bike_time": 80, "value": 70,\n'
+                '        "size": 55, "amenities": 80, "vibe": 90\n'
+                '      }},\n'
+                '      "amenities": ["in-unit W/D", "dishwasher", "rooftop"],\n'
+                '      "photos": ["https://..."],\n'
+                '      "summary": "string — 2 sentence pitch on why this fits",\n'
+                '      "has_kitchen": true,\n'
+                '      "notify_worthy": true\n'
+                '    }}\n'
+                '  ],\n'
+                '  "sources_scanned": ["craigslist", "hotpads", "padmapper"],\n'
+                '  "scan_summary": "string — what was searched and any issues hit"\n'
+                '}}'
+            ),
+            "output_key": "apartment_synthesis",
+            "timeout_override": 1800,
+            "max_retries": 1,
+            "output_schema": "apartment_synthesis_v1",
+            "model_override": "claude-opus-4-7",
+        },
+        # ──────────────────────────────────────────────────
+        # Step 1: persist results, fire notification if new matches
+        # ──────────────────────────────────────────────────
+        {
+            "name": "persist_and_notify",
+            "job_type": "apartments_persist",
+            # The persist executor reads the synthesis directly from
+            # the workflow context (by output_key 'apartment_synthesis'),
+            # so the rendered prompt is just a marker. Kept non-empty
+            # because CreateJobRequest enforces prompt min_length=1.
+            "prompt_template": "persist",
+            "output_key": "persist_result",
+            "timeout_override": 60,
+            "max_retries": 0,
+        },
+    ],
+}
+
 TEMPLATES = {
     "startup_idea_pipeline": STARTUP_IDEA_PIPELINE,
     "side_hustle_pipeline": SIDE_HUSTLE_PIPELINE,
     "freelance_scanner": FREELANCE_SCANNER_PIPELINE,
     "strategy_evolution": STRATEGY_EVOLUTION_PIPELINE,
+    "apartment_search": APARTMENT_SEARCH_PIPELINE,
 }

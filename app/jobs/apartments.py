@@ -1,0 +1,346 @@
+"""Persist apartment-search synthesis results and fire notifications.
+
+Runs as the final step of the ``apartment_search`` pipeline. Reads
+the prior step's ``apartment_synthesis`` JSON from the workflow
+context, upserts each listing into ``apartment_listings`` keyed by
+sha1 of the canonical URL, tracks which listings are new since the
+last scan, marks listings not seen in 7 days as inactive, then —
+when any new listings are flagged ``notify_worthy=true`` — sends a
+match-notification email directly via ``email_sender``.
+
+This pipeline is deliberately NOT registered in the notification
+dispatch dicts (``_TEMPLATE_OVERRIDE_KEY`` etc.) because it has no
+approval gate and no build-complete email. The persist step owns
+the entire notification lifecycle.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import literal_column, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.db.models import ApartmentListingRow, WorkflowRow
+from app.models.job import JobStatus, JobStopReason, JobRow
+from app.services import email_sender, report_renderer
+from app.services.job_service import finalize_job, update_job_progress
+
+logger = logging.getLogger("arlo.jobs.apartments")
+
+
+# Listings not re-seen in this many days are marked inactive. Most SF
+# rental listings churn within a week, so a 7-day window catches the
+# common case without flapping on transient scrape misses.
+STALE_DAYS = 7
+
+
+def _canonical_listing_id(url: str) -> str:
+    """sha1(canonicalized URL). Lowercased + stripped to deduplicate
+    listings that appear on multiple sources with the same canonical
+    URL trailing query-string noise."""
+    canonical = (url or "").strip().lower().split("?")[0].rstrip("/")
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()
+
+
+async def execute_apartments_persist_job(session: AsyncSession, job: JobRow) -> None:
+    """Persist apartment-search results + send notification on new matches.
+
+    Reads the prior step's synthesis JSON from the workflow context.
+    Returns a small JSON summary as result_data: new vs known counts
+    + notification status.
+    """
+    try:
+        await update_job_progress(
+            session, job.id,
+            current_step="loading_synthesis",
+            progress_message="Loading apartment synthesis from workflow context",
+            iteration_count=1,
+        )
+
+        if job.workflow_id is None:
+            await finalize_job(
+                session, job.id,
+                status=JobStatus.FAILED,
+                error_message="apartments_persist job has no workflow_id",
+                stop_reason=JobStopReason.ERROR.value,
+            )
+            return
+
+        workflow = await session.get(WorkflowRow, job.workflow_id)
+        if workflow is None:
+            await finalize_job(
+                session, job.id,
+                status=JobStatus.FAILED,
+                error_message=f"workflow {job.workflow_id} not found",
+                stop_reason=JobStopReason.ERROR.value,
+            )
+            return
+
+        context = json.loads(workflow.context or "{}")
+        synthesis_raw = context.get("apartment_synthesis")
+        synthesis = _parse_synthesis(synthesis_raw)
+        if synthesis is None:
+            await finalize_job(
+                session, job.id,
+                status=JobStatus.FAILED,
+                error_message="could not parse apartment_synthesis JSON from context",
+                stop_reason=JobStopReason.ERROR.value,
+            )
+            return
+
+        top_matches = synthesis.get("top_matches") or []
+        if not isinstance(top_matches, list):
+            await finalize_job(
+                session, job.id,
+                status=JobStatus.FAILED,
+                error_message="apartment_synthesis.top_matches is not a list",
+                stop_reason=JobStopReason.ERROR.value,
+            )
+            return
+
+        await update_job_progress(
+            session, job.id,
+            current_step="upserting",
+            progress_message=f"Upserting {len(top_matches)} listings",
+            iteration_count=2,
+        )
+
+        new_notify_listings, upsert_count, refreshed_count = await _upsert_listings(
+            session, top_matches, workflow_id=job.workflow_id
+        )
+
+        await update_job_progress(
+            session, job.id,
+            current_step="marking_stale",
+            progress_message="Marking stale listings",
+            iteration_count=3,
+        )
+        stale_count = await _mark_stale_inactive(session)
+
+        # Notification: only when new notify_worthy listings landed in
+        # this run AND the user opted in by setting the recipient email.
+        notification_status = "skipped_no_new_matches"
+        if new_notify_listings:
+            if settings.approval_recipient_email:
+                try:
+                    await _send_match_email(session, new_notify_listings)
+                    notification_status = f"sent ({len(new_notify_listings)} new)"
+                except Exception:
+                    logger.exception(
+                        "Apartments notification email failed for job %s; continuing",
+                        job.id,
+                    )
+                    notification_status = "email_failed"
+            else:
+                notification_status = "skipped_no_recipient"
+
+        summary = {
+            "upsert_count": upsert_count,
+            "refreshed_count": refreshed_count,
+            "new_notify_count": len(new_notify_listings),
+            "stale_marked_count": stale_count,
+            "notification_status": notification_status,
+        }
+        preview = (
+            f"Apartments: {upsert_count} new, {refreshed_count} refreshed, "
+            f"{len(new_notify_listings)} new notify-worthy, "
+            f"{stale_count} marked stale. Notification: {notification_status}."
+        )
+        await finalize_job(
+            session, job.id,
+            status=JobStatus.SUCCEEDED,
+            result_preview=preview,
+            result_data=json.dumps(summary),
+        )
+    except Exception as e:
+        logger.exception("apartments_persist job %s crashed", job.id)
+        await finalize_job(
+            session, job.id,
+            status=JobStatus.FAILED,
+            error_message=f"{type(e).__name__}: {e}",
+            stop_reason=JobStopReason.ERROR.value,
+        )
+
+
+def _parse_synthesis(raw) -> dict | None:
+    """The synthesis is stored on the workflow context as a JSON string
+    (set by advance_workflow from the prior step's result_data). Defend
+    against the rare case where it's already been parsed to a dict."""
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("apartment_synthesis is not valid JSON: %r", raw[:200])
+            return None
+    return None
+
+
+async def _upsert_listings(
+    session: AsyncSession,
+    listings: list[dict],
+    *,
+    workflow_id,
+) -> tuple[list[dict], int, int]:
+    """Upsert each listing keyed by sha1(url). Returns:
+    - list of dicts that are BOTH new (first time we've seen the URL)
+      AND flagged notify_worthy. These drive the email.
+    - count of brand-new rows inserted this run
+    - count of existing rows refreshed (last_seen_at bumped)
+
+    Insert-vs-update is detected atomically using the Postgres
+    ``RETURNING (xmax = 0)`` trick: ``xmax = 0`` on a row that came
+    back from ``INSERT ... ON CONFLICT DO UPDATE`` means it was the
+    INSERT branch (no pre-existing tuple was locked). This is the
+    only safe way to detect new vs existing inside a single
+    statement — a pre-read followed by an upsert would let two
+    overlapping scans both classify the same listing as ``new`` and
+    double-fire the notification.
+    """
+    now = datetime.now(timezone.utc)
+    new_notify_listings: list[dict] = []
+    new_count = 0
+    refreshed_count = 0
+
+    for listing in listings:
+        if not isinstance(listing, dict):
+            continue
+        url = listing.get("url")
+        if not url:
+            continue
+        listing_id = _canonical_listing_id(url)
+
+        values = {
+            "listing_id": listing_id,
+            "source": str(listing.get("source", "other"))[:32],
+            "url": url,
+            "title": str(listing.get("title", "(untitled)"))[:8000],
+            "neighborhood": _trunc(listing.get("neighborhood"), 64),
+            "address": listing.get("address"),
+            "rent_usd": _safe_int(listing.get("rent_usd")),
+            "beds": _safe_int(listing.get("beds")),
+            "baths": _safe_float(listing.get("baths")),
+            "sqft": _safe_int(listing.get("sqft")),
+            "bike_time_min": _safe_int(listing.get("bike_time_min")),
+            "score": float(listing.get("score") or 0.0),
+            "score_breakdown": listing.get("score_breakdown"),
+            "amenities": listing.get("amenities") or [],
+            "photos": listing.get("photos") or [],
+            "summary": listing.get("summary"),
+            "workflow_id": workflow_id,
+            "raw": listing,
+            "last_seen_at": now,
+            "is_active": True,
+        }
+
+        stmt = pg_insert(ApartmentListingRow).values(
+            **values,
+            first_seen_at=now,
+        )
+        # On conflict (already seen), refresh the mutable fields but
+        # leave first_seen_at alone — it represents discovery time,
+        # which is what makes "new since last scan" meaningful.
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["listing_id"],
+            set_={k: v for k, v in values.items() if k != "listing_id"},
+        ).returning(
+            ApartmentListingRow.listing_id,
+            literal_column("(xmax = 0)").label("inserted"),
+        )
+        result = await session.execute(stmt)
+        row = result.first()
+        is_brand_new = bool(row.inserted) if row is not None else False
+
+        if is_brand_new:
+            new_count += 1
+            if listing.get("notify_worthy") is True:
+                new_notify_listings.append(listing)
+        else:
+            refreshed_count += 1
+
+    await session.commit()
+    # Sort new-notify-worthy desc by score so the email shows best first.
+    new_notify_listings.sort(key=lambda l: float(l.get("score") or 0), reverse=True)
+    return new_notify_listings, new_count, refreshed_count
+
+
+async def _mark_stale_inactive(session: AsyncSession) -> int:
+    """Set is_active=false on listings not seen in STALE_DAYS days."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=STALE_DAYS)
+    result = await session.execute(
+        update(ApartmentListingRow)
+        .where(
+            ApartmentListingRow.last_seen_at < cutoff,
+            ApartmentListingRow.is_active.is_(True),
+        )
+        .values(is_active=False)
+        .returning(ApartmentListingRow.listing_id)
+    )
+    rows = result.fetchall()
+    await session.commit()
+    return len(rows)
+
+
+async def _send_match_email(session: AsyncSession, new_listings: list[dict]) -> None:
+    """Render + send the new-matches email."""
+    total_known_result = await session.execute(
+        select(ApartmentListingRow.listing_id)
+    )
+    total_known = len(list(total_known_result.scalars().all()))
+    run_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    html_body, text_fallback = report_renderer.render_apartment_match_email(
+        new_listings, total_known=total_known, run_time=run_time,
+    )
+    n = len(new_listings)
+    top = new_listings[0]
+    top_summary = (
+        f"${_safe_int(top.get('rent_usd')) or '?'}/mo "
+        f"{top.get('neighborhood', '?')} (score {float(top.get('score') or 0):.0f})"
+    )
+    subject = (
+        f"[arlo] 1 new apartment — {top_summary}"
+        if n == 1
+        else f"[arlo] {n} new apartments — top: {top_summary}"
+    )[:120]
+
+    await email_sender.send_email(
+        to=settings.approval_recipient_email,
+        subject=subject,
+        html_body=html_body,
+        text_fallback=text_fallback,
+    )
+    logger.info("Sent apartment match email (%d new listings)", n)
+
+
+def _safe_int(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _trunc(value, n: int) -> str | None:
+    if value is None:
+        return None
+    return str(value)[:n]

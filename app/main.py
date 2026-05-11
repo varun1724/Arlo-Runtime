@@ -2,12 +2,19 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.apartment_routes import router as apartments_router
 from app.api.routes import router as jobs_router
 from app.api.workflow_routes import public_router as workflows_public_router
 from app.api.workflow_routes import router as workflows_router
 from app.db.base import Base
 from app.db.engine import engine
-from app.db.models import JobEventRow, JobRow, WorkflowRow  # noqa: F401 — ensure models are registered
+from app.db.models import (  # noqa: F401 — ensure models are registered
+    ApartmentListingRow,
+    JobEventRow,
+    JobRow,
+    SavedApartmentRow,
+    WorkflowRow,
+)
 
 
 @asynccontextmanager
@@ -25,6 +32,7 @@ app.include_router(jobs_router)
 app.include_router(workflows_router)
 # Round 5: public signed-URL endpoints (approve-by-link + artifact download)
 app.include_router(workflows_public_router)
+app.include_router(apartments_router)
 
 
 @app.get("/health")

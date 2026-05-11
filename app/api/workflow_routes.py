@@ -31,7 +31,11 @@ from app.models.workflow import (
 from app.services import workflow_service
 from app.services.signed_urls import verify_signed_token
 from app.services.facts_cache import get_facts_block
-from app.workflows.templates import TEMPLATES, _apply_deep_research_mode
+from app.workflows.templates import (
+    TEMPLATES,
+    _apply_deep_research_mode,
+    apply_apartment_search_defaults,
+)
 
 router = APIRouter(prefix="/workflows", tags=["workflows"], dependencies=[Depends(verify_token)])
 
@@ -47,6 +51,12 @@ public_router = APIRouter(prefix="/workflows", tags=["workflows-public"])
 # pipeline? Add its template_id here and map it to the appropriate
 # selected-* key. Unknown templates fall back to ``selected_idea``
 # which matches pre-Round-3 behavior.
+#
+# NOT here: ``apartment_search`` — that pipeline has no approval gate
+# and no per-pipeline build-complete email (the persist step emits its
+# own match-notification email directly). Deliberately absent so the
+# A5 consistency test still passes (this dict is the canonical key set
+# for the 5 notification dispatch dicts).
 _TEMPLATE_OVERRIDE_KEY: dict[str, str] = {
     "startup_idea_pipeline": "selected_idea",
     "side_hustle_pipeline": "selected_hustle",
@@ -127,6 +137,12 @@ async def create_workflow_from_template(
     initial_context = dict(body.initial_context)
     if body.deep_research_mode:
         steps_raw, initial_context = _apply_deep_research_mode(steps_raw, initial_context)
+
+    # Apartment search has many prompt-required criteria with sensible
+    # defaults — let the trigger script POST an empty body and still
+    # render a well-formed prompt. User-supplied values always win.
+    if template_id == "apartment_search":
+        initial_context = apply_apartment_search_defaults(initial_context)
 
     # Cost cap: stash in context under a reserved key so advance_workflow
     # can enforce before creating each new step job. Reserved keys are

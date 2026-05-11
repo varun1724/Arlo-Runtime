@@ -769,6 +769,88 @@ class SideHustleSynthesisResult(BaseModel):
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Apartment search pipeline → ApartmentSynthesisResult
+# ─────────────────────────────────────────────────────────────────────
+
+ApartmentSource = Literal[
+    "craigslist",
+    "hotpads",
+    "padmapper",
+    "zillow",
+    "apartments_com",
+    "trulia",
+    "rent_com",
+    "streeteasy",
+    "redfin",
+    "facebook_marketplace",
+    "other",
+]
+
+
+class ApartmentScoreBreakdown(BaseModel):
+    """Per-criterion score for transparency. 0-100 each; total_score is
+    a weighted sum reported by Claude.
+
+    Weights baked into the prompt:
+      neighborhood 25, bike_time 20, value (rent vs sqft) 15,
+      size 10, amenities 15, vibe 15.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    neighborhood: float = Field(ge=0, le=100)
+    bike_time: float = Field(ge=0, le=100)
+    value: float = Field(ge=0, le=100)
+    size: float = Field(ge=0, le=100)
+    amenities: float = Field(ge=0, le=100)
+    vibe: float = Field(ge=0, le=100)
+
+
+class ApartmentListing(BaseModel):
+    """Canonical apartment listing shape returned by the scan_and_rank
+    step and persisted to apartment_listings.
+
+    Some fields are intentionally optional — listing pages vary in
+    quality. Rent and beds are the only hard filters Claude is told
+    not to violate; everything else is best-effort.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    source: ApartmentSource
+    url: str = Field(min_length=10)
+    title: str = Field(min_length=3)
+    neighborhood: str | None = None
+    address: str | None = None
+    rent_usd: int = Field(ge=500, le=15000)
+    beds: int = Field(ge=1, le=6)
+    baths: float = Field(ge=0.5, le=6)
+    sqft: int | None = Field(default=None, ge=200, le=5000)
+    bike_time_min: int | None = Field(default=None, ge=1, le=120)
+    score: float = Field(ge=0, le=100)
+    score_breakdown: ApartmentScoreBreakdown
+    amenities: list[str] = Field(default_factory=list)
+    photos: list[str] = Field(default_factory=list)
+    summary: str = Field(min_length=20)
+    has_kitchen: bool = True
+    notify_worthy: bool = False
+    """Claude flags a listing notify_worthy when it scores >=80 AND
+    meets every hard requirement (2BR+, kitchen, sqft, rent cap, bike
+    time, target neighborhood). The persist job only emails on new
+    listings with notify_worthy=true."""
+
+
+class ApartmentSynthesisResult(BaseModel):
+    """Output of the scan_and_rank step. Top matches ranked desc by score."""
+
+    model_config = ConfigDict(extra="allow")
+
+    top_matches: list[ApartmentListing] = Field(default_factory=list, max_length=40)
+    sources_scanned: list[ApartmentSource] = Field(min_length=2)
+    scan_summary: str = Field(min_length=20)
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Registry — looked up by name from StepDefinition.output_schema
 # ─────────────────────────────────────────────────────────────────────
 
@@ -784,6 +866,8 @@ STEP_OUTPUT_SCHEMAS: dict[str, type[BaseModel]] = {
     "side_hustle_feasibility_v1": SideHustleFeasibilityResult,
     "side_hustle_contrarian_v1": SideHustleContrarianResult,
     "side_hustle_synthesis_v1": SideHustleSynthesisResult,
+    # Apartment search pipeline
+    "apartment_synthesis_v1": ApartmentSynthesisResult,
 }
 
 

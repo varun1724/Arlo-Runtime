@@ -734,3 +734,207 @@ def render_side_hustle_synthesis_report(
     pdf_bytes = _render_pdf_bytes(html_body)
 
     return html_body, text_fallback, pdf_bytes
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Apartment match notification email
+# ─────────────────────────────────────────────────────────────────────
+#
+# Sent by the apartments_persist job when a recurring scan surfaces
+# new listings flagged notify_worthy. Different shape from the
+# approval-gate renderers above — no rankings list, no approval
+# links, no PDF. Just a card per new listing pointing back to the
+# original URL.
+
+_HTML_TEMPLATE_APARTMENTS = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arlo — new apartment matches</title>
+<style>
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: #1a1a1a;
+    background: #f5f5f7;
+    margin: 0;
+    padding: 16px;
+    line-height: 1.5;
+  }}
+  .container {{ max-width: 640px; margin: 0 auto; }}
+  h1 {{ font-size: 22px; margin: 0 0 4px 0; }}
+  .meta {{ color: #888; font-size: 12px; margin-bottom: 16px; }}
+  .summary {{
+    background: #fff;
+    padding: 14px 16px;
+    border-radius: 10px;
+    border-left: 4px solid #4a6cf7;
+    margin-bottom: 18px;
+    font-size: 14px;
+  }}
+  .card {{
+    background: #fff;
+    padding: 16px;
+    border-radius: 10px;
+    margin-bottom: 12px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }}
+  .score {{ color: #4a6cf7; font-weight: 700; font-size: 13px; letter-spacing: 0.3px; }}
+  .title {{ font-size: 17px; font-weight: 700; margin: 2px 0 4px 0; }}
+  .row {{ font-size: 13px; color: #555; margin: 4px 0; }}
+  .rent {{ font-size: 16px; font-weight: 700; color: #1a1a1a; }}
+  .summary-line {{ font-size: 14px; color: #444; margin: 10px 0 12px 0; }}
+  .amenities {{ font-size: 12px; color: #666; margin-top: 6px; }}
+  .button {{
+    display: inline-block;
+    background: #4a6cf7;
+    color: #ffffff !important;
+    text-decoration: none;
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-weight: 600;
+    margin-top: 10px;
+    font-size: 13px;
+  }}
+  .footer {{ color: #aaa; font-size: 11px; text-align: center; margin-top: 20px; }}
+</style>
+</head>
+<body>
+  <div class="container">
+    <h1>{headline}</h1>
+    <div class="meta">{meta_line}</div>
+
+    <div class="summary">{summary_line}</div>
+
+    {cards_html}
+
+    <div class="footer">Arlo Runtime · Apartment scan</div>
+  </div>
+</body>
+</html>
+"""
+
+
+_APT_CARD_TEMPLATE = """
+<div class="card">
+  <div class="score">Score {score:.0f}/100 · {source}</div>
+  <div class="title">{title}</div>
+  <div class="row"><span class="rent">${rent}/mo</span> · {beds}BR · {baths}BA{sqft_block}</div>
+  <div class="row">{neighborhood}{bike_block}</div>
+  <div class="summary-line">{summary}</div>
+  {amenities_block}
+  <a href="{url}" class="button">Open listing →</a>
+</div>
+"""
+
+
+def _format_baths(baths) -> str:
+    try:
+        b = float(baths)
+    except (TypeError, ValueError):
+        return "?"
+    if b == int(b):
+        return str(int(b))
+    return f"{b:.1f}"
+
+
+def _render_apartment_cards_html(listings: list[dict]) -> str:
+    cards: list[str] = []
+    for ap in listings:
+        rent = ap.get("rent_usd")
+        rent_str = f"{int(rent):,}" if isinstance(rent, (int, float)) else "?"
+        sqft = ap.get("sqft")
+        sqft_block = f" · {int(sqft)} sqft" if isinstance(sqft, (int, float)) else ""
+        bike = ap.get("bike_time_min")
+        bike_block = f" · {int(bike)} min bike" if isinstance(bike, (int, float)) else ""
+        amenities = ap.get("amenities") or []
+        amenities_block = ""
+        if amenities:
+            ams = ", ".join(_esc(a) for a in amenities[:6])
+            amenities_block = f'<div class="amenities">Amenities: {ams}</div>'
+
+        cards.append(
+            _APT_CARD_TEMPLATE.format(
+                score=float(ap.get("score") or 0),
+                source=_esc(ap.get("source", "?")),
+                title=_esc(ap.get("title", "(untitled)")),
+                rent=rent_str,
+                beds=_esc(ap.get("beds", "?")),
+                baths=_esc(_format_baths(ap.get("baths"))),
+                sqft_block=sqft_block,
+                neighborhood=_esc(ap.get("neighborhood", "?")),
+                bike_block=bike_block,
+                summary=_esc(ap.get("summary", "")),
+                amenities_block=amenities_block,
+                url=_esc(ap.get("url", "#")),
+            )
+        )
+    return "\n".join(cards)
+
+
+def _render_apartment_text_fallback(listings: list[dict], summary_line: str) -> str:
+    lines: list[str] = ["ARLO — NEW APARTMENT MATCHES", "=" * 50, "", summary_line, ""]
+    for ap in listings:
+        lines.append(f"[{float(ap.get('score') or 0):.0f}/100] {ap.get('title', '(untitled)')}")
+        rent = ap.get("rent_usd")
+        rent_str = f"${int(rent):,}" if isinstance(rent, (int, float)) else "$?"
+        bike = ap.get("bike_time_min")
+        bike_str = f"{int(bike)} min bike" if isinstance(bike, (int, float)) else ""
+        sqft = ap.get("sqft")
+        sqft_str = f"{int(sqft)} sqft" if isinstance(sqft, (int, float)) else ""
+        meta_bits = [
+            rent_str,
+            f"{ap.get('beds', '?')}BR",
+            f"{_format_baths(ap.get('baths'))}BA",
+            sqft_str,
+            ap.get("neighborhood", ""),
+            bike_str,
+            ap.get("source", ""),
+        ]
+        lines.append("   " + " · ".join(b for b in meta_bits if b))
+        if ap.get("summary"):
+            lines.append(f"   {ap['summary']}")
+        if ap.get("amenities"):
+            lines.append(f"   Amenities: {', '.join(ap['amenities'][:6])}")
+        lines.append(f"   {ap.get('url', '')}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_apartment_match_email(
+    new_listings: list[dict],
+    total_known: int,
+    run_time: str,
+) -> tuple[str, str]:
+    """Render the new-apartment notification email.
+
+    Args:
+        new_listings: Listings flagged notify_worthy that weren't in the
+            DB before this scan. Already sorted desc by score.
+        total_known: How many listings the DB has tracked across all
+            scans (for context in the meta line).
+        run_time: ISO timestamp of when this scan finished.
+
+    Returns:
+        (html_body, text_fallback). No PDF for this lighter-weight
+        notification.
+    """
+    n = len(new_listings)
+    headline = (
+        "1 new apartment match" if n == 1 else f"{n} new apartment matches"
+    )
+    summary_line = (
+        f"Found {n} new high-scoring 2BR listing"
+        f"{'s' if n != 1 else ''} since your last scan. "
+        f"{total_known} listing{'s' if total_known != 1 else ''} tracked total."
+    )
+    meta_line = f"Scan completed {_esc(run_time)}"
+
+    html_body = _HTML_TEMPLATE_APARTMENTS.format(
+        headline=_esc(headline),
+        meta_line=meta_line,
+        summary_line=_esc(summary_line),
+        cards_html=_render_apartment_cards_html(new_listings),
+    )
+    text_fallback = _render_apartment_text_fallback(new_listings, summary_line)
+    return html_body, text_fallback

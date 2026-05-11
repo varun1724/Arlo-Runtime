@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -100,4 +101,59 @@ class JobEventRow(Base):
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ApartmentListingRow(Base):
+    __tablename__ = "apartment_listings"
+
+    listing_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    neighborhood: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rent_usd: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    beds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    baths: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sqft: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bike_time_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    score_breakdown: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    amenities: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    photos: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    workflow_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("workflows.id"), nullable=True
+    )
+    raw: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class SavedApartmentRow(Base):
+    __tablename__ = "saved_apartments"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    listing_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("apartment_listings.listing_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_email: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    saved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("listing_id", "user_email", name="uq_saved_apartments_listing_user"),
     )
