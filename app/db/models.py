@@ -104,6 +104,28 @@ class JobEventRow(Base):
     )
 
 
+class ApartmentListingGroupRow(Base):
+    """Atomic newness tracker for the apartment_search dedup pipeline.
+
+    The persist job inserts into this table with ``ON CONFLICT DO NOTHING
+    RETURNING (xmax = 0)``. If the INSERT branch fired, this scan is
+    the first to see the group — emit a notification. If the conflict
+    branch fired, another scan already claimed it — skip.
+
+    Without this table, two overlapping scans both snapshot
+    pre_existing_group_ids before either commits and each independently
+    concludes the group is new. The codex Round 2 review flagged this
+    as a real double-notify race.
+    """
+
+    __tablename__ = "apartment_listing_groups"
+
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ApartmentListingRow(Base):
     __tablename__ = "apartment_listings"
 
@@ -127,6 +149,18 @@ class ApartmentListingRow(Base):
         UUID(as_uuid=True), ForeignKey("workflows.id"), nullable=True
     )
     raw: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+
+    # Dedup columns (migration 0006). listing_group_id is a deterministic
+    # hash computed by the apartments_persist job's tiered match rule;
+    # rows with the same group id represent the same physical apartment
+    # surfaced on different rental sites.
+    listing_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    canonical_address: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    building_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    photo_fingerprint: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     first_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

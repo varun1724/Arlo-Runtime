@@ -9,6 +9,7 @@ from app.api.workflow_routes import router as workflows_router
 from app.db.base import Base
 from app.db.engine import engine
 from app.db.models import (  # noqa: F401 — ensure models are registered
+    ApartmentListingGroupRow,
     ApartmentListingRow,
     JobEventRow,
     JobRow,

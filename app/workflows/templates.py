@@ -2138,47 +2138,117 @@ APARTMENT_SEARCH_PIPELINE = {
                 "You are a San Francisco apartment hunter for a 22-year-old "
                 "software engineer. Find current 2BR rental listings that fit "
                 "the criteria below. Use WebFetch and WebSearch on the rental "
-                "sources listed. Today's date is the date of this run — only "
-                "include listings posted within the last 30 days.\n\n"
+                "sources listed. Only include listings posted within the last "
+                "30 days.\n\n"
                 "HARD REQUIREMENTS (drop any listing that fails one):\n"
                 "- 2 bedrooms (min {min_bedrooms})\n"
                 "- {min_baths}+ bathrooms\n"
                 "- Has a kitchen (drop SROs / kitchenless studios)\n"
-                "- Monthly rent <= ${max_rent_usd} (this is a soft cap; an "
-                "exceptional listing 5-10% over is allowed, but flag it)\n"
-                "- {min_sqft}+ sqft when sqft is listed (when sqft is not "
-                "listed, infer from photos / description; if clearly small, "
-                "drop)\n"
+                "- Monthly rent <= ${max_rent_usd} (soft cap; an exceptional "
+                "listing 5-10% over is allowed, but flag it)\n"
+                "- {min_sqft}+ sqft when listed; if clearly small in photos, "
+                "drop\n"
                 "- Available for move-in between {move_in_window}\n"
                 "- 12-month lease available\n"
                 "- Bike commute to {work_address} within {soft_max_bike_time_min} "
-                "minutes (estimate — Pacific Heights center is ~26 min as "
-                "calibration). Hard cap on the soft-max: drop anything over "
-                "{max_bike_time_min}.\n\n"
+                "minutes (Pacific Heights center is ~26 min as calibration). "
+                "Hard cap: drop anything over {max_bike_time_min}.\n\n"
                 "TARGET NEIGHBORHOODS (only consider listings in these):\n"
                 "{target_neighborhoods}\n\n"
                 "USER CONTEXT:\n"
                 "{user_persona}\n\n"
                 "ADDITIONAL PREFERENCES (nice-to-haves, not filters):\n"
                 "{preferences}\n\n"
-                "SOURCES — use WebFetch on each. If a source 403s or returns "
-                "no content, note it in scan_summary and continue with the "
-                "others. Do not fabricate listings if a source fails.\n"
-                "  - Craigslist: https://sfbay.craigslist.org/search/sfc/apa "
+                "SOURCES — only fetch the following. Sites empirically known "
+                "to hard-block WebFetch (HotPads, Zillow, Apartments.com, "
+                "Trulia, RentCafe) are NOT in this list — do not attempt them "
+                "to save tokens.\n"
+                "\n"
+                "  1. CRAIGSLIST JSON API — primary source, returns "
+                "~150 candidates with price/beds/lat/lon in one JSON call:\n"
+                "     https://sfbay.craigslist.org/jsonsearch/sfc/apa"
                 "?max_price={max_rent_usd}&min_bedrooms={min_bedrooms}\n"
-                "  - HotPads: https://hotpads.com/san-francisco-ca/apartments-for-rent"
-                "?bedsMin={min_bedrooms}&priceMax={max_rent_usd}\n"
-                "  - Padmapper: https://www.padmapper.com/apartments/san-francisco-ca"
+                "     Then WebFetch the top 30-40 PostingURL detail pages to "
+                "extract address, sqft, baths, amenities, and the listing's "
+                "actual neighborhood label.\n"
+                "\n"
+                "  2. REDFIN RENTALS — server-rendered, listings in initial "
+                "HTML with streetAddress JSON-LD:\n"
+                "     https://www.redfin.com/city/17151/CA/San-Francisco/"
+                "apartments-for-rent/filter/property-type=apartment+condo,"
+                "min-beds={min_bedrooms},max-price={max_rent_usd}\n"
+                "     Parse the JSON-LD blocks for listings. Fetch up to 10-15 "
+                "detail pages for the best candidates.\n"
+                "\n"
+                "  3. ZUMPER — listings in the initial HTML:\n"
+                "     https://www.zumper.com/apartments-for-rent/"
+                "san-francisco-ca?min_bedrooms={min_bedrooms}"
+                "&max_price={max_rent_usd}\n"
+                "     Top 10-15 detail follow-ups.\n"
+                "\n"
+                "  4. PADMAPPER — some listings visible in the index page HTML:\n"
+                "     https://www.padmapper.com/apartments/san-francisco-ca"
                 "?bedrooms={min_bedrooms}&maximum-price={max_rent_usd}\n"
-                "  - Zillow Rentals: https://www.zillow.com/homes/for_rent/"
-                "San-Francisco-CA/?beds={min_bedrooms}&price={max_rent_usd}\n"
-                "  - Apartments.com: https://www.apartments.com/san-francisco-ca/"
-                "{min_bedrooms}-bedrooms-under-{max_rent_usd}/\n\n"
+                "     Top 10-15 detail follow-ups. Skip if the index page "
+                "returns mostly empty markup.\n"
+                "\n"
+                "  5. REDDIT (SOFT SOURCE — low confidence, never auto-merge "
+                "with structured listings):\n"
+                "     https://old.reddit.com/r/SFhousing/new.json?limit=50\n"
+                "     https://old.reddit.com/r/sanfrancisco/search.json?"
+                "q=apartment+2br&restrict_sr=1&sort=new\n"
+                "     Only include a Reddit post when it has a concrete "
+                "address (or named building) AND a stated rent AND mentions "
+                "2 bedrooms. Drop everything else — vague 'looking for "
+                "roommate' posts have no place here. Set score_breakdown "
+                "value lower (max 70) since detail quality varies.\n"
+                "\n"
+                "If a source returns 403 / empty / blocked, note it in "
+                "scan_summary and continue. Do NOT fabricate listings.\n\n"
+                "DEDUP — same physical apartment can appear on multiple "
+                "sites (Craigslist + Zumper crossposts are common). The "
+                "Python persist step will run a deterministic "
+                "listing_group_id hash and collapse rows automatically. "
+                "Your job is to give it the signals it needs — NOT to "
+                "pre-merge anything yourself.\n"
+                "\n"
+                "Emit EVERY URL you found as its own record. If a "
+                "Craigslist post and a Zumper post are clearly the same "
+                "apartment, emit BOTH records with matching "
+                "canonical_address/unit/lat/lon fields, and let the "
+                "downstream grouping merge them. Do not drop URLs to "
+                "avoid duplication — dropped URLs cannot be surfaced as "
+                "'also listed on' in the iOS app.\n"
+                "\n"
+                "EVERY listing must include these fields when extractable:\n"
+                "  - canonical_address: street address, no unit (e.g. "
+                "'1650 Clay St')\n"
+                "  - unit: apartment / suite / unit number, no '#' prefix. "
+                "When the listing page shows a unit (even in the title "
+                "like 'Apt 5'), pull it out — the downstream dedup uses "
+                "it as the gold-standard merge key.\n"
+                "  - building_name: named building if applicable (e.g. "
+                "'NEMA', 'AvalonBay Mission Bay')\n"
+                "  - latitude / longitude: when the source provides them "
+                "(Craigslist JSON has these; Redfin sometimes)\n"
+                "  - sqft: when listed. The grouper uses sqft to keep "
+                "different units in the same building from collapsing.\n"
+                "\n"
+                "The grouping rule (for your reference — Python applies it):\n"
+                "  Tier 1: normalized_address + unit  (gold)\n"
+                "  Tier 2: normalized_address + rent_bucket($50) + beds + "
+                "sqft_bucket(100)  (strong; sqft prevents false merges)\n"
+                "  Tier 3: lat/lon rounded to 4dp (~11m) + rent + beds + "
+                "sqft (fallback)\n"
+                "  Tier 4: url hash  (terminal — each URL is its own group)\n"
+                "\n"
+                "You MAY still set `also_listed_on` as an advisory hint "
+                "when you spot crossposts, but it's purely informational; "
+                "the merge happens via the address signals above.\n\n"
                 "SCORING — 0-100 per dimension; total_score = weighted sum:\n"
-                "  neighborhood (weight 0.25): how desirable for the persona. "
-                "Mission / Polk Gulch / Nob Hill = 100; Russian Hill / Pacific "
-                "Heights / North Beach = 85-90; anything outside the target "
-                "list = 0 (and should already be dropped).\n"
+                "  neighborhood (weight 0.25): Mission / Polk Gulch / Nob "
+                "Hill = 100; Russian Hill / Pacific Heights / North Beach "
+                "= 85-90; anything outside the target list = 0.\n"
                 "  bike_time (weight 0.20): 100 at <=15 min, 70 at 25 min, "
                 "50 at 28 min, 0 over 30 min.\n"
                 "  value (weight 0.15): rent vs sqft and rent vs neighborhood "
@@ -2186,25 +2256,30 @@ APARTMENT_SEARCH_PIPELINE = {
                 "  size (weight 0.10): 700 sqft = 50, 900+ = 80, 1100+ = 100.\n"
                 "  amenities (weight 0.15): in-unit W/D, dishwasher, "
                 "rooftop, gym in building, parking, walkable grocery (<5 min), "
-                "walkable gym, basketball court / Y nearby. Each yes = ~12 "
-                "points.\n"
+                "walkable gym, basketball court / Y nearby. Each yes = ~12.\n"
                 "  vibe (weight 0.15): young-professional friendliness, "
                 "nightlife walkability, Friday/Saturday bar scene density.\n\n"
-                "MARK notify_worthy=true ONLY when total score >= 80 AND every "
-                "hard requirement is met. The notification email only "
-                "surfaces these.\n\n"
-                "OUTPUT FORMAT — respond with ONLY this JSON. Up to 25 "
-                "top_matches (sorted desc by score). If a source returned no "
-                "valid listings, list it in sources_scanned anyway so the "
-                "user knows what was tried.\n"
+                "MARK notify_worthy=true ONLY when total score >= 80 AND "
+                "every hard requirement is met AND the listing has a real "
+                "address (no notify on Reddit-only soft-source posts even "
+                "if the score is high).\n\n"
+                "OUTPUT FORMAT — respond with ONLY this JSON. Up to 35 "
+                "top_matches sorted desc by score. List EVERY source you "
+                "attempted in sources_scanned, even ones that returned "
+                "empty.\n"
                 '{{\n'
                 '  "top_matches": [\n'
                 '    {{\n'
-                '      "source": "craigslist|hotpads|padmapper|zillow|apartments_com|trulia|rent_com|streeteasy|redfin|facebook_marketplace|other",\n'
-                '      "url": "string — the canonical listing URL",\n'
+                '      "source": "craigslist|redfin|zumper|padmapper|reddit",\n'
+                '      "url": "string — primary listing URL",\n'
                 '      "title": "string — listing headline",\n'
                 '      "neighborhood": "Mission|Polk Gulch|Nob Hill|Russian Hill|Pacific Heights|North Beach",\n'
-                '      "address": "string — street address if visible",\n'
+                '      "address": "string — full address as displayed",\n'
+                '      "canonical_address": "1650 Clay St",\n'
+                '      "unit": "5",\n'
+                '      "building_name": "string or null",\n'
+                '      "latitude": 37.7918,\n'
+                '      "longitude": -122.4181,\n'
                 '      "rent_usd": 4800,\n'
                 '      "beds": 2,\n'
                 '      "baths": 1.0,\n'
@@ -2218,12 +2293,21 @@ APARTMENT_SEARCH_PIPELINE = {
                 '      "amenities": ["in-unit W/D", "dishwasher", "rooftop"],\n'
                 '      "photos": ["https://..."],\n'
                 '      "summary": "string — 2 sentence pitch on why this fits",\n'
+                '      "photo_fingerprint_hint": "string or null — only when you '
+                "notice the lead photo is identical to another listing's; "
+                'free-form human-readable",\n'
+                '      "also_listed_on": ["https://zumper.com/... (zumper)", '
+                '"https://padmapper.com/... (padmapper)"],\n'
                 '      "has_kitchen": true,\n'
                 '      "notify_worthy": true\n'
                 '    }}\n'
                 '  ],\n'
-                '  "sources_scanned": ["craigslist", "hotpads", "padmapper"],\n'
-                '  "scan_summary": "string — what was searched and any issues hit"\n'
+                '  "sources_scanned": ["craigslist", "redfin", "zumper", '
+                '"padmapper", "reddit"],\n'
+                '  "scan_summary": "string — per-source notes: what worked, '
+                'what returned empty/403, how many candidates each yielded, '
+                'how many crossposts you identified (informational only — '
+                'every URL still gets its own record)"\n'
                 '}}'
             ),
             "output_key": "apartment_synthesis",

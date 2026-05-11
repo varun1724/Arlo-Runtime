@@ -774,14 +774,19 @@ class SideHustleSynthesisResult(BaseModel):
 
 ApartmentSource = Literal[
     "craigslist",
-    "hotpads",
+    "redfin",
+    "zumper",
     "padmapper",
+    "reddit",
+    # Retained for backward-compat with old workflow rows; the current
+    # prompt no longer attempts these because they hard-block the
+    # WebFetch tool (probed empirically on 2026-05-10).
+    "hotpads",
     "zillow",
     "apartments_com",
     "trulia",
     "rent_com",
     "streeteasy",
-    "redfin",
     "facebook_marketplace",
     "other",
 ]
@@ -813,7 +818,13 @@ class ApartmentListing(BaseModel):
     Some fields are intentionally optional — listing pages vary in
     quality. Rent and beds are the only hard filters Claude is told
     not to violate; everything else is best-effort.
-    """
+
+    Round 2 (multi-source dedup): the canonical_*, unit, building_name,
+    latitude/longitude, and photo_fingerprint_hint fields feed the
+    Python dedup logic in apartments_persist._compute_group_id. Claude
+    should fill as many as it can extract; missing fields drop the
+    listing down the tiered match rule (address → addr+rent+beds →
+    coords → URL fallback)."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -838,6 +849,39 @@ class ApartmentListing(BaseModel):
     meets every hard requirement (2BR+, kitchen, sqft, rent cap, bike
     time, target neighborhood). The persist job only emails on new
     listings with notify_worthy=true."""
+
+    # ── Dedup signals (multi-source) ─────────────────────────────────
+    canonical_address: str | None = None
+    """Normalized street address, no unit. E.g. '1650 Clay St'. Gold
+    signal for the dedup grouping function."""
+
+    unit: str | None = None
+    """Unit / apartment / suite number when visible. Combined with
+    canonical_address for the highest-confidence merge key."""
+
+    building_name: str | None = None
+    """Named buildings (AvalonBay, NEMA, etc.) where applicable.
+    Used as a soft signal when address is hidden."""
+
+    latitude: float | None = Field(default=None, ge=37.6, le=37.9)
+    longitude: float | None = Field(default=None, ge=-122.55, le=-122.35)
+    """SF-area sanity range. Used in the tiered match when address is
+    missing — coords rounded to 4 decimal places (~11m) act as the
+    bucket key."""
+
+    photo_fingerprint_hint: str | None = None
+    """Short string Claude emits when it recognizes the lead photo as
+    identical to another listing's lead photo. NOT a real perceptual
+    hash — a human-readable hint like 'identical hero photo to listing
+    X' that flags potential cross-posts. Used as a tiebreaker only."""
+
+    also_listed_on: list[str] = Field(default_factory=list)
+    """Advisory hint Claude can use to flag suspected crossposts. Every
+    URL still ships as its own record (so the API can show them all
+    under one canonical group via the deterministic listing_group_id);
+    this field is informational and does NOT cause any merging on
+    its own. The Python persist step's compute_group_id is the only
+    code that actually collapses records."""
 
 
 class ApartmentSynthesisResult(BaseModel):
