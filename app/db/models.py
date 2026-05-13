@@ -237,3 +237,23 @@ class PolymarketSignalRow(Base):
     )
     is_live: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserBankrollRow(Base):
+    """The user's current Polymarket bankroll for bet-size suggestions.
+
+    Single row per user_email (single-user app today). The signals API
+    reads this on each /signals call and adds a ``suggested_bet_usd``
+    field to every row based on quarter Kelly with a 70% confidence
+    discount, capped at 15% of bankroll. User updates manually after
+    each trade resolves — see migration 0008 for design notes.
+    """
+
+    __tablename__ = "user_bankroll"
+
+    user_email: Mapped[str] = mapped_column(String(256), primary_key=True)
+    balance_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)

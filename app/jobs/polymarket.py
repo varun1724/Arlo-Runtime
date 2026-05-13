@@ -405,7 +405,23 @@ def _compute_signals(
         })
 
     rows.sort(key=lambda r: r["edge_score"], reverse=True)
-    return rows
+
+    # Collapse to one signal per Polymarket market. Each conditionId has
+    # TWO outcomes (Yes/No, or team A vs team B). When the top-50 cohort
+    # splits — 5 traders backing St. Louis, 4 backing the Athletics —
+    # both sides qualify and the API would surface contradictory
+    # "take both outcomes" signals. The higher-edge side is the
+    # consensus; suppress the other.
+    seen_conditions: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for row in rows:
+        cid = row.get("condition_id") or ""
+        if cid and cid in seen_conditions:
+            continue
+        if cid:
+            seen_conditions.add(cid)
+        deduped.append(row)
+    return deduped
 
 
 # ───────────────────────── persistence ─────────────────────────
