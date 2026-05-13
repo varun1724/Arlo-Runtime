@@ -302,7 +302,10 @@ class PaperTradeRow(Base):
     cur_value_usd: Mapped[float] = mapped_column(Float, nullable=False)
     unrealized_pnl_usd: Mapped[float] = mapped_column(Float, nullable=False)
 
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open", index=True)
+    # VARCHAR(32) — widened from 16 in migration 0010 because
+    # 'closed_signal_dropped' (21 chars) was overflowing and poisoning
+    # the engine session every cycle.
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open", index=True)
     opened_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
