@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     approval_recipient_email: str = ""
     notification_base_url: str = "http://localhost:8000"
 
+    # Per-pipeline opt-in for the polymarket-signals email digest.
+    # When False (default), even brand-new high-edge signals don't email —
+    # the user reads them in the iOS app. Set ARLO_POLYMARKET_NOTIFY_EMAIL=true
+    # to re-enable per-cycle digests.
+    polymarket_notify_email: bool = False
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

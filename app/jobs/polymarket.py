@@ -142,7 +142,13 @@ async def execute_polymarket_scan_job(session: AsyncSession, job: JobRow) -> Non
 
         notification_status = "skipped_no_fresh_signals"
         if fresh_high_edge:
-            if settings.approval_recipient_email:
+            if not settings.polymarket_notify_email:
+                # User opted out — signals are visible in the iOS app +
+                # web. Mark them notified anyway so we don't keep them
+                # in the "fresh" queue for if/when emails are re-enabled.
+                await _mark_notified(session, [s["asset_id"] for s in fresh_high_edge])
+                notification_status = "skipped_email_opted_out"
+            elif settings.approval_recipient_email:
                 try:
                     await _send_signal_email(fresh_high_edge)
                     notification_status = f"sent ({len(fresh_high_edge)} fresh)"
