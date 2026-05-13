@@ -239,6 +239,82 @@ class PolymarketSignalRow(Base):
     notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class PaperBankrollRow(Base):
+    """Paper-trading bankroll. Separate from UserBankrollRow on purpose
+    so the sim loop can't touch the user's real-money state.
+
+    The paper engine job (app/jobs/paper_trading.py) initializes this
+    via the POST /paper-trading/start endpoint, then debits/credits
+    current_balance_usd on each entry/exit. ``ends_at`` is the
+    auto-stop deadline (set to start_time + 7 days by default).
+    ``status`` is 'active' / 'stopped' / 'completed'.
+    """
+
+    __tablename__ = "paper_bankroll"
+
+    scope: Mapped[str] = mapped_column(String(32), primary_key=True)
+    initial_balance_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    current_balance_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    total_realized_pnl_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    trade_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    win_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    loss_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+
+
+class PaperTradeRow(Base):
+    """One simulated Polymarket position. Status starts as 'open' on
+    entry; the engine refreshes cur_price + unrealized_pnl_usd each
+    cycle and flips status on exit:
+      - closed_win: cur_price reached target_exit_price
+      - closed_loss: cur_price dropped below entry_price * 0.5 (stop)
+      - closed_resolved: market resolved (end_date past)
+      - closed_signal_dropped: source signal went is_live=False
+      - closed_stale: open for >30 days with no movement
+    """
+
+    __tablename__ = "paper_trades"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    scope: Mapped[str] = mapped_column(String(32), nullable=False, default="default")
+    asset_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    condition_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    slug: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    event_slug: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    end_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    entry_price: Mapped[float] = mapped_column(Float, nullable=False)
+    target_exit_price: Mapped[float] = mapped_column(Float, nullable=False)
+    edge_score_at_entry: Mapped[float] = mapped_column(Float, nullable=False)
+    stake_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    shares: Mapped[float] = mapped_column(Float, nullable=False)
+
+    cur_price: Mapped[float] = mapped_column(Float, nullable=False)
+    cur_value_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    unrealized_pnl_usd: Mapped[float] = mapped_column(Float, nullable=False)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open", index=True)
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_refreshed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    realized_pnl_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class UserBankrollRow(Base):
     """The user's current Polymarket bankroll for bet-size suggestions.
 

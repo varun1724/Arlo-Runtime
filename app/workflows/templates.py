@@ -2488,6 +2488,36 @@ POLYMARKET_SIGNALS_PIPELINE = {
     ],
 }
 
+PAPER_TRADING_ENGINE_PIPELINE = {
+    "template_id": "paper_trading_engine",
+    "name": "Polymarket Paper Trading Engine (5min cycle)",
+    "description": (
+        "One cycle of the paper-trading loop. Refreshes open positions "
+        "with a price-window scan (catches intraday spikes), auto-closes "
+        "on target/stop/resolution, and opens fresh entries for "
+        "edge >= 22 signals. Sized off the paper bankroll, not the "
+        "user's real bankroll. Triggered by n8n cron every 5 minutes "
+        "during the active paper session."
+    ),
+    "required_context": [],
+    "optional_context": [],
+    "steps": [
+        {
+            "name": "engine_cycle",
+            "job_type": "paper_trade_engine",
+            "prompt_template": (
+                "Paper-trading engine cycle: refresh open positions via "
+                "1-min price-history scan, auto-close on target/stop/"
+                "resolution, open new entries from current high-edge "
+                "polymarket_signals."
+            ),
+            "output_key": "engine_result",
+            "timeout_override": 300,
+            "max_retries": 0,
+        }
+    ],
+}
+
 TEMPLATES = {
     "startup_idea_pipeline": STARTUP_IDEA_PIPELINE,
     "side_hustle_pipeline": SIDE_HUSTLE_PIPELINE,
@@ -2495,4 +2525,5 @@ TEMPLATES = {
     "strategy_evolution": STRATEGY_EVOLUTION_PIPELINE,
     "apartment_search": APARTMENT_SEARCH_PIPELINE,
     "polymarket_signals": POLYMARKET_SIGNALS_PIPELINE,
+    "paper_trading_engine": PAPER_TRADING_ENGINE_PIPELINE,
 }
