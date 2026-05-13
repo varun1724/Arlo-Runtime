@@ -191,3 +191,49 @@ class SavedApartmentRow(Base):
     __table_args__ = (
         UniqueConstraint("listing_id", "user_email", name="uq_saved_apartments_listing_user"),
     )
+
+
+class PolymarketSignalRow(Base):
+    """One row per (market outcome) that the copytrade scan currently
+    surfaces as a high-edge signal. See migration 0007 for design notes.
+
+    Lifecycle: each scan upserts the rows it finds and sets is_live=True;
+    a sweep at end-of-scan marks rows not seen in this scan as is_live=False
+    rather than deleting them, so the iOS app can render "stale" state
+    and the next scan can flip them back to live if they re-qualify.
+    """
+
+    __tablename__ = "polymarket_signals"
+
+    asset_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    condition_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    event_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    slug: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    event_slug: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    icon_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    end_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    n_holders: Mapped[int] = mapped_column(Integer, nullable=False)
+    avg_entry_price: Mapped[float] = mapped_column(Float, nullable=False)
+    cur_price: Mapped[float] = mapped_column(Float, nullable=False)
+    target_exit_price: Mapped[float] = mapped_column(Float, nullable=False)
+    upside_pct: Mapped[float] = mapped_column(Float, nullable=False)
+    avg_pnl_pct: Mapped[float] = mapped_column(Float, nullable=False)
+    total_size_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    days_to_resolution: Mapped[float | None] = mapped_column(Float, nullable=True)
+    edge_score: Mapped[float] = mapped_column(Float, nullable=False)
+    recommended_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    holders: Mapped[Any] = mapped_column(JSONB, nullable=False)
+
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_scan_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    is_live: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

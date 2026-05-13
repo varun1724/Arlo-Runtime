@@ -14,6 +14,7 @@ class JobType(StrEnum):
     TRADING = "trading"
     OPTIMIZE = "optimize"
     APARTMENTS_PERSIST = "apartments_persist"
+    POLYMARKET_SCAN = "polymarket_scan"
 
 
 class JobStatus(StrEnum):

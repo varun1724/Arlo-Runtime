@@ -7,6 +7,7 @@ from app.jobs.apartments import execute_apartments_persist_job
 from app.jobs.builder import execute_builder_job
 from app.jobs.local_optimizer import execute_optimize_job
 from app.jobs.n8n import execute_n8n_job
+from app.jobs.polymarket import execute_polymarket_scan_job
 from app.jobs.research import execute_research_job
 from app.jobs.trading import execute_trading_job
 from app.models.job import JobStatus, JobStopReason
@@ -30,6 +31,8 @@ async def execute_job(session: AsyncSession, job: JobRow) -> None:
         await execute_optimize_job(session, job)
     elif job.job_type == "apartments_persist":
         await execute_apartments_persist_job(session, job)
+    elif job.job_type == "polymarket_scan":
+        await execute_polymarket_scan_job(session, job)
     else:
         logger.error("Unknown job type: %s", job.job_type)
         await finalize_job(

@@ -2454,10 +2454,41 @@ APARTMENT_SEARCH_PIPELINE = {
     ],
 }
 
+POLYMARKET_SIGNALS_PIPELINE = {
+    "template_id": "polymarket_signals",
+    "name": "Polymarket Copy-Trade Signals",
+    "description": (
+        "Scan top-50 Polymarket leaderboard wallets, aggregate common "
+        "positions, score by edge, and notify on fresh high-edge signals."
+    ),
+    "required_context": [],
+    "optional_context": [],
+    "steps": [
+        {
+            "name": "scan_and_signal",
+            "job_type": "polymarket_scan",
+            # The whole pipeline lives in execute_polymarket_scan_job —
+            # one step, deterministic Python, no Claude call. The
+            # ``prompt`` is informational only (worker logs it for
+            # observability; the job handler ignores it).
+            "prompt_template": (
+                "Polymarket copy-trade scan. Fetch top-50 leaderboard "
+                "wallets (monthly+weekly profit+volume), aggregate "
+                "current open positions by asset, surface assets held "
+                "by >=3 top wallets where holders are winning, the "
+                "market hasn't run away from their entry, and "
+                "resolution is 1-120 days out."
+            ),
+            "timeout_override": 600,
+        }
+    ],
+}
+
 TEMPLATES = {
     "startup_idea_pipeline": STARTUP_IDEA_PIPELINE,
     "side_hustle_pipeline": SIDE_HUSTLE_PIPELINE,
     "freelance_scanner": FREELANCE_SCANNER_PIPELINE,
     "strategy_evolution": STRATEGY_EVOLUTION_PIPELINE,
     "apartment_search": APARTMENT_SEARCH_PIPELINE,
+    "polymarket_signals": POLYMARKET_SIGNALS_PIPELINE,
 }
