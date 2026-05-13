@@ -75,7 +75,10 @@ class PolymarketSignalListResponse(BaseModel):
 
 def _to_response(row: PolymarketSignalRow) -> PolymarketSignalResponse:
     slug = row.event_slug or row.slug or ""
-    url = f"https://polymarket.com/event/{slug}" if slug else "https://polymarket.com"
+    # /us/event/* matches Polymarket's apple-app-site-association applinks
+    # path pattern, so tapping the link on iOS opens the Polymarket app
+    # (Universal Link). Without the /us/ prefix iOS just opens Safari.
+    url = f"https://polymarket.com/us/event/{slug}" if slug else "https://polymarket.com"
     return PolymarketSignalResponse(
         asset_id=row.asset_id,
         condition_id=row.condition_id,

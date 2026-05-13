@@ -2470,7 +2470,9 @@ POLYMARKET_SIGNALS_PIPELINE = {
             # The whole pipeline lives in execute_polymarket_scan_job —
             # one step, deterministic Python, no Claude call. The
             # ``prompt`` is informational only (worker logs it for
-            # observability; the job handler ignores it).
+            # observability; the job handler ignores it). ``output_key``
+            # is required by StepDefinition but unused by this job (the
+            # handler writes directly to the polymarket_signals table).
             "prompt_template": (
                 "Polymarket copy-trade scan. Fetch top-50 leaderboard "
                 "wallets (monthly+weekly profit+volume), aggregate "
@@ -2479,7 +2481,9 @@ POLYMARKET_SIGNALS_PIPELINE = {
                 "market hasn't run away from their entry, and "
                 "resolution is 1-120 days out."
             ),
+            "output_key": "scan_result",
             "timeout_override": 600,
+            "max_retries": 0,
         }
     ],
 }

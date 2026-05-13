@@ -554,7 +554,10 @@ async def _send_signal_email(signals: list[dict[str, Any]]) -> None:
     rows_html = []
     for s in shown_signals:
         slug = s.get("event_slug") or s.get("slug") or ""
-        url = f"https://polymarket.com/event/{slug}" if slug else "https://polymarket.com"
+        # /us/event/* is Polymarket's Universal Link path — opens the
+        # iOS app on tap if installed, otherwise falls back to App Store
+        # install. See apple-app-site-association on polymarket.com.
+        url = f"https://polymarket.com/us/event/{slug}" if slug else "https://polymarket.com"
         rows_html.append(
             f"<tr>"
             f"<td style='padding:8px;border-bottom:1px solid #eee'>"
